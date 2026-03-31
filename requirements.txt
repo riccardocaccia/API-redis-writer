@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+redis
+rq
+pyjwt
+httpx
+authlib
+pydantic
