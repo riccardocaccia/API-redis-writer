@@ -6,3 +6,4 @@ pyjwt
 httpx
 authlib
 pydantic
+hvac>=2.0.0
