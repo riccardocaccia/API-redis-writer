@@ -23,6 +23,7 @@ import requests
 
 # ── CLI args ──────────────────────────────────────────────────────────────────
 
+# XXX: REMOVE THIS OPTION -> the dashboard should manage this?
 parser = argparse.ArgumentParser(description="Laniakea Queue API — test script")
 parser.add_argument("--api",               default="http://localhost:8000", help="API base URL")
 parser.add_argument("--file",              default="deployment_info.json",  help="Deployment JSON file")
@@ -34,6 +35,7 @@ API = args.api.rstrip("/")
 
 # ── Step 0: get OIDC token ────────────────────────────────────────────────────
 
+# insert oidc token on cli
 print("\n=== Laniakea Queue API — test script ===\n")
 print("Paste your OIDC token (from ReCaS IAM),")
 print("then press Enter:\n")
@@ -47,15 +49,13 @@ if not oidc_token:
 
 print("\n[1] Authenticating with API...")
 try:
-    r = requests.post(
-        f"{API}/auth/oidc",
-        json={"oidc_token": oidc_token},
-        timeout=15,
-    )
+    r = requests.post(f"{API}/auth/oidc", json={"oidc_token": oidc_token}, timeout=15,)
     r.raise_for_status()
+
 except requests.exceptions.ConnectionError:
     print(f"ERROR: cannot reach API at {API}. Is it running?")
     sys.exit(1)
+
 except requests.exceptions.HTTPError as exc:
     print(f"ERROR: authentication failed ({exc.response.status_code})")
     print(exc.response.text)
@@ -65,6 +65,7 @@ session_token = r.json()["session_token"]
 user_info     = r.json()["user_info"]
 expires_in    = r.json()["expires_in"]
 
+# INSERT HERE some debug info 
 print(f"✓ Authenticated as '{user_info.get('username') or user_info.get('sub')}'")
 print(f"  sub          : {user_info.get('sub')}")
 print(f"  Session token: valid for {expires_in // 60} minutes")
@@ -171,6 +172,7 @@ try:
         timeout=15,
     )
     r.raise_for_status()
+
 except requests.exceptions.HTTPError as exc:
     print(f"ERROR: enqueue failed ({exc.response.status_code})")
     print(exc.response.text)

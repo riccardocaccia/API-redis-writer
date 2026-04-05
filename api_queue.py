@@ -8,7 +8,6 @@ import copy
 import os
 from datetime import datetime, timedelta
 from typing import Optional
-
 import httpx
 import hvac
 import jwt
@@ -20,43 +19,47 @@ from redis import Redis
 from rq import Queue
 
 # ============================================================
-# Configuration (override with environment variables)
+# Configuration (saved in .env)
 # ============================================================
 
 SECRET_KEY          = os.getenv("SECRET_KEY", "")
 ALGORITHM           = "HS256"
-SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "60"))
+SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "60")) # 1h validity
 
-OIDC_DISCOVERY_URL  = os.getenv(
-    "OIDC_DISCOVERY_URL",
-    "https://iam.recas.ba.infn.it/.well-known/openid-configuration"
-)
+# authentication informations json url
+OIDC_DISCOVERY_URL  = os.getenv("OIDC_DISCOVERY_URL", "https://iam.recas.ba.infn.it/.well-known/openid-configuration")
 
-REDIS_HOST     = os.getenv("REDIS_HOST", "redis_ip")
-REDIS_PORT     = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "admin_password")
+# redis block
+REDIS_HOST     = os.getenv("REDIS_HOST", "")          # ip
+REDIS_PORT     = int(os.getenv("REDIS_PORT", "6379")) # suggested
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "admin") # NOTE: sample
 
-VAULT_ADDR         = os.getenv("VAULT_ADDR", "")
-VAULT_WRITER_TOKEN = os.getenv("VAULT_WRITER_TOKEN", "")
+# vault block
+VAULT_ADDR         = os.getenv("VAULT_ADDR", "")      # ip
+VAULT_WRITER_TOKEN = os.getenv("VAULT_WRITER_TOKEN", "") 
 VAULT_TLS_VERIFY   = os.getenv("VAULT_TLS_VERIFY", "false").lower() == "true"
-VAULT_MOUNT        = "secret"
+VAULT_MOUNT        = "secret"                         # secrets path in Ansible Vault
 
 # ============================================================
-# Redis / RQ setup
+# Redis setup
 # ============================================================
 
+# connection pool
 redis_conn = Redis(
     host=REDIS_HOST,
     port=REDIS_PORT,
     password=REDIS_PASSWORD,
+    # converting results in 
     decode_responses=True,
 )
 
+# NOTE: now in my redis only 2 queues are present aws & openstack
 queues: dict[str, Queue] = {
-    "openstack": Queue("openstack", connection=redis_conn),
-    "aws":       Queue("aws",       connection=redis_conn),
-}
+                            "openstack": Queue("openstack", connection=redis_conn),
+                            "aws":       Queue("aws",       connection=redis_conn),
+                           }
 
+# NOTE: check the dashboard if all the controls are necessary
 PROVIDER_TO_QUEUE: dict[str, str] = {
     "openstack": "openstack",
     "Openstack": "openstack",
@@ -72,8 +75,9 @@ PROVIDER_TO_QUEUE: dict[str, str] = {
 
 vault_client = hvac.Client(
     url=VAULT_ADDR,
-    token=VAULT_WRITER_TOKEN,
-    verify=VAULT_TLS_VERIFY,
+    token=VAULT_WRITER_TOKEN, # NOTE: the api will need the token to write secrets inside the vault.
+                              #       it has the WRITE ONLY permission, so it cannot read secrets! 
+    verify=VAULT_TLS_VERIFY,  # T/F
 )
 
 # ============================================================
@@ -81,15 +85,20 @@ vault_client = hvac.Client(
 # ============================================================
 
 class OIDCLoginRequest(BaseModel):
+    """
+    Only the aai token is needed.
+    """
     oidc_token: str
 
 
 class SessionTokenResponse(BaseModel):
+    """
+    If the token check is OK returns:
+    """
     session_token: str
     token_type:    str = "bearer" # check if the user has the correct permission
-    expires_in:    int # seconds
+    expires_in:    int            # seconds
     user_info:     dict
-
 
 class UserCredentials(BaseModel):
     """
@@ -98,13 +107,14 @@ class UserCredentials(BaseModel):
     OpenStack: app_credentials or aai_token.
     AWS: app_credentials
     """
+    # NOTE: now no credentials is essential. Consider changing this logic
     # OpenStack
     openstack_ssh_key:               Optional[str] = None
     openstack_app_credential_id:     Optional[str] = None
     openstack_app_credential_secret: Optional[str] = None
     openstack_proxy_host:            Optional[str] = None
     # AWS
-    aws_ssh_key:    Optional[str] = None
+    aws_ssh_key:    Optional[str] = None  # NOTE: mmmm I already have one in openstack, change key name ecc
     aws_access_key: Optional[str] = None
     aws_secret_key: Optional[str] = None
     aws_bastion_ip: Optional[str] = None
@@ -112,20 +122,23 @@ class UserCredentials(BaseModel):
 
 class DeploymentRequest(BaseModel):
     """
-    Full deployment configuration, matching the structure used by workers.
-    The auth.aai_token field carries the OIDC token so that workers can
-    exchange it for a Keystone token when they process the job.
+    Full deployment configuration (deployment_info.json), matching the structure used by workers.
+    The auth.aai_token field carries the OIDC token so that workers can exchange it for a Keystone 
+    token when they process the job.
     """
-    deployment_uuid:   str
-    timestamp:         str
-    description:       str
+    deployment_uuid:   str    # NOTE: the dashboard needs to create a uuid for each job
+    timestamp:         str 
+    description:       str    # optional or mandatory? check teams
     auth:              dict   # { aai_token, sub, group }
     orchestrator:      dict   # { target_provider, desired_orchestrator, endpoint }
-    selected_provider: str    # { OpenStack | AWS }
-    cloud_providers:   dict
+    selected_provider: str    # OpenStack | AWS 
+    cloud_providers:   dict   
 
 
 class JobResponse(BaseModel):
+    """
+    Job successfully enqueued..now: 
+    """
     job_id:          str
     queue_name:      str
     deployment_uuid: str
@@ -139,10 +152,10 @@ class JobResponse(BaseModel):
 app = FastAPI(
     title="Laniakea Queue API",
     description="OIDC-authenticated gateway for enqueuing deployment jobs on Redis.",
-    version="1.0.0",
+    version="1.1.0",    # NOTE: I guess..
 )
 
-security = HTTPBearer()
+security = HTTPBearer() # users must authenticate by the Bearer Token Protocol (JWT standard)
 
 # ============================================================
 # Auth helpers
@@ -154,88 +167,78 @@ async def _fetch_userinfo(oidc_token: str) -> dict:
     Returns the userinfo claims on success; raises HTTPException otherwise.
     """
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10) as client:       # async + wait -> do not block the api 
             discovery_resp = await client.get(OIDC_DISCOVERY_URL)
-            discovery_resp.raise_for_status()
+            discovery_resp.raise_for_status()                     # http result -> if ok does nothing
             userinfo_url = discovery_resp.json()["userinfo_endpoint"]
 
-            userinfo_resp = await client.get(
-                userinfo_url,
-                headers={"Authorization": f"Bearer {oidc_token}"},  # bearer + token -> handle the jwt token
-            )
+            userinfo_resp = await client.get(userinfo_url,
+                            headers={"Authorization": f"Bearer {oidc_token}"},  # bearer + token -> handle the jwt token
+                            )
 
             # invalid token error
             if userinfo_resp.status_code == 401:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="OIDC token is invalid or expired.",
-                )
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token is invalid/expired.",)
             userinfo_resp.raise_for_status()
             return userinfo_resp.json()
 
+    # exceptions
     except HTTPException:
         raise
+
     except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"OIDC provider unreachable: {exc}",
-        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OIDC provider unreachable: {exc}",)
 
 
 def _create_session_token(user_info: dict) -> tuple[str, int]:
     """
     Mint a short-lived JWT session token from the verified userinfo claims.
     Returns (encoded_token, expires_in_seconds).
-    This token is signed by the API and allows the user's action until valid.
+    This token is signed by the API and allows the user's action until valid (1h).
     """
+    # calculate the expire by adding to the current time the inserted expiration
     expire = datetime.utcnow() + timedelta(minutes=SESSION_TTL_MINUTES)
+    # user info in the token
     payload = {
-        "sub":                user_info.get("sub"),
-        "preferred_username": user_info.get("preferred_username"),
+        "sub":                user_info.get("sub"),                
+        "preferred_username": user_info.get("preferred_username"), 
         "email":              user_info.get("email"),
         "groups":             user_info.get("groups", []),
         "exp":                expire,
         "iat":                datetime.utcnow(),  # issued at
         "user_info":          user_info,
     }
-    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)  # returns a JWT encoded with SECRET_KEY
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)  # Generates a signed JWT. 
+                                                                  # only this API can verify its integrity.
     return token, SESSION_TTL_MINUTES * 60
 
 
 def _verify_session_token(credentials: HTTPAuthorizationCredentials = Depends(security),) -> dict:
     """
-    Dependency: decode and validate the session JWT.
-    Returns the decoded user context.
+    Decode and validate the session JWT -> Returns the decoded user context.
     Depends(security) -> searches for the HTTP header: Authorization: Bearer <token>. If not present = UNAUTHORIZED
     """
     try:
-        payload = jwt.decode(
-            credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM]
-        )
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
 
+        # error: no user informations retrievable
         if not payload.get("sub"):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token: missing subject.",
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token: missing subject.",)
 
-        # The endpoint receives these informations
+        # The endpoint receives these informations about the user
         return {
             "sub":      payload["sub"],
             "username": payload.get("preferred_username"),
-            "groups":   payload.get("groups", []),
+            "groups":   payload.get("groups", []),         # one or more
+            "email":    payload.get("email"),
         }
 
+    # exceptions
     except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session token has expired.",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session token has expired.",)
+
     except jwt.InvalidTokenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid session token: {exc}",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid session token: {exc}",)
 
 # ============================================================
 # Vault helpers
@@ -247,6 +250,7 @@ def _vault_write_credentials(user_sub: str, creds: dict) -> str:
     Path: secret/data/<sub>/credentials.
     Use create_or_update to update if already present.
     """
+    # NOTE: to be discussed if ok
     vault_path = f"{user_sub}/credentials"
     try:
         vault_client.secrets.kv.v2.create_or_update_secret(
@@ -254,11 +258,14 @@ def _vault_write_credentials(user_sub: str, creds: dict) -> str:
             secret=creds,
             mount_point=VAULT_MOUNT,
         )
+      
+    # NOTE: usually write_token not valid or fail to connect to vault    
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Vault write failed: {exc}",
         )
+
     return vault_path
 
 
@@ -287,9 +294,11 @@ def _strip_secrets_from_job(deployment: DeploymentRequest) -> dict:
 # Endpoints
 # ============================================================
 
+# NOTE: the path is only temporary, to be added /v1.0/ and more articulate path
 @app.post("/auth/oidc", response_model=SessionTokenResponse)
 async def login_oidc(req: OIDCLoginRequest):
-     """
+
+    """
     Exchange a valid OIDC access token for a short-lived API session token.
 
     Flow:
@@ -300,10 +309,12 @@ async def login_oidc(req: OIDCLoginRequest):
         5. Use the session token as a Bearer token on all subsequent requests.
     """
 
-    # NOTE for me: why not change directly the token with keystone? 
+    # NOTE for me: why not changing directly the token with keystone? 
     # for example we want to put 50 job in the queue, our token will always has 
     # 1 h life span, and if we exceed all the job managed after 60 minutes would fail.
     # WHEN TO CHANGE the token? the worker must manage the exchange
+    
+    # return a session token with the user info and his expire date
     user_info = await _fetch_userinfo(req.oidc_token)
     session_token, expires_in = _create_session_token(user_info)
 
@@ -320,11 +331,12 @@ async def login_oidc(req: OIDCLoginRequest):
 
 
 @app.post("/profile/credentials", status_code=201)
-async def save_credentials(
-    creds: UserCredentials,
-    caller: dict = Depends(_verify_session_token),
-):
+async def save_credentials(creds: UserCredentials, caller: dict = Depends(_verify_session_token),):
+    # XXX: to be removed
+    # i've implemented a parser that, specified the lag in the input allows you to set your credential
+    # is it a function for the dashboard? 
     """
+    OPTIONAL
     Saves or updates credenzials for the associated provider.
 
     Le credenziali vengono scritte su Vault sotto:
@@ -333,10 +345,7 @@ async def save_credentials(
     secret_data = {k: v for k, v in creds.dict().items() if v is not None}
 
     if not secret_data:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No credentials provided.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No credentials provided.",)
 
     vault_path = _vault_write_credentials(caller["sub"], secret_data)
 
@@ -358,24 +367,23 @@ async def enqueue_deployment(deployment: DeploymentRequest, caller: dict = Depen
 
     Requires a valid session token in the Authorization header.
     """
-    # resolve provider -> queue name
+    # take the provider and put the provider name as queue name
     queue_name = PROVIDER_TO_QUEUE.get(deployment.selected_provider)
     if not queue_name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Unsupported provider '{deployment.selected_provider}'. "
-                f"Supported: {list(PROVIDER_TO_QUEUE.keys())}"
-            ),
-        )
+            detail=(f"Unsupported provider '{deployment.selected_provider}'. "
+                    f"Supported: {list(PROVIDER_TO_QUEUE.keys())}"),
+                   )
 
-    # Rimuovi i campi sensibili prima di mettere su Redis
+    # Remove sensible fields
     clean_deployment = _strip_secrets_from_job(deployment)
 
     job_data = {
         **clean_deployment,
-        # user_sub esplicito: l'agent lo usa per leggere le credenziali da Vault
+        # user_sub explicit: agent uses it to access Vault credentials
         "user_sub":      caller["sub"],
+        "user_email":    caller.get("email"),
         "requested_by":  caller["username"],
         "requested_at":  datetime.utcnow().isoformat(),
     }
@@ -387,11 +395,11 @@ async def enqueue_deployment(deployment: DeploymentRequest, caller: dict = Depen
             job_timeout="10h",
             description=f"Deployment {deployment.deployment_uuid} by {caller['username']}",
         )
+
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to enqueue job: {exc}",
-        )
+            detail=f"Failed to enqueue job: {exc}",)
 
     return JobResponse(
         job_id=job.id,
@@ -403,17 +411,15 @@ async def enqueue_deployment(deployment: DeploymentRequest, caller: dict = Depen
 
 
 @app.get("/api/deployments/{job_id}")
-async def get_job_status(
-    job_id: str,
-    caller: dict = Depends(_verify_session_token),
-):
+async def get_job_status(job_id: str, caller: dict = Depends(_verify_session_token),):
     """    
     Return the current status of a previously enqueued deployment job.
-    Requires session token.
+    Require session token.
     """
     try:
         from rq.job import Job
         job = Job.fetch(job_id, connection=redis_conn)
+
         return {
             "job_id":     job.id,
             "status":     job.get_status(),
@@ -423,6 +429,7 @@ async def get_job_status(
             "started_at": job.started_at,
             "ended_at":   job.ended_at,
         }
+
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
