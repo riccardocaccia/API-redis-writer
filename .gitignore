@@ -1,3 +1,6 @@
 *.json
 .env
+*.crt
+*.key
+test_enqueue.py
 

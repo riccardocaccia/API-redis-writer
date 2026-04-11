@@ -164,3 +164,4 @@ WantedBy=multi-user.target
 - **Use HTTPS** in production so session tokens are not exposed in transit.
 - **Rotate `SECRET_KEY`** — invalidates all existing session tokens; users
   must re-authenticate.
+

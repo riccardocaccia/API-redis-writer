@@ -7,9 +7,12 @@ Test script — simulates dashboard behavior:
   Step 3: POST /api/deployments -> job written to Redis
 
 Usage:
-    python test_enqueue.py                          # enqueue only
-    python test_enqueue.py --setup-credentials      # write credentials to Vault + enqueue
-    python test_enqueue.py --api http://IP:8000
+    python test_enqueue.py
+    python test_enqueue.py --api https://212.189.205.167.cloud.ba.infn.it:8443 --cacert certs/ca.crt
+    python test_enqueue.py --setup-credentials
+    python test_enqueue.py --setup-credentials --credential-file openrc.sh
+    python test_enqueue.py --setup-credentials --credential-file clouds.yaml --cloud openstack
+    python test_enqueue.py --no-verify
     python test_enqueue.py --file my_deployment.json
 """
 
@@ -18,27 +21,65 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-
 import requests
 
 # ── CLI args ──────────────────────────────────────────────────────────────────
 
-# XXX: REMOVE THIS OPTION -> the dashboard should manage this?
 parser = argparse.ArgumentParser(description="Laniakea Queue API — test script")
-parser.add_argument("--api",               default="http://localhost:8000", help="API base URL")
-parser.add_argument("--file",              default="deployment_info.json",  help="Deployment JSON file")
-parser.add_argument("--setup-credentials", action="store_true",
-                    help="Write user credentials to Vault before enqueuing (first-time setup)")
+parser.add_argument(
+    "--api",
+    default="https://212.189.205.167.cloud.ba.infn.it:8443",
+    help="API base URL",
+)
+parser.add_argument(
+    "--cacert",
+    default="certs/ca.crt",
+    help="CA cert to verify the API server TLS cert (default: certs/ca.crt)",
+)
+parser.add_argument(
+    "--no-verify",
+    action="store_true",
+    help="Disable TLS certificate verification (testing only)",
+)
+parser.add_argument("--file", default="deployment_info.json", help="Deployment JSON file")
+parser.add_argument(
+    "--setup-credentials",
+    action="store_true",
+    help="Write user credentials to Vault before enqueuing",
+)
+parser.add_argument(
+    "--credential-file",
+    default=None,
+    metavar="PATH",
+    help="RC file (.sh) or clouds.yaml to auto-import OpenStack credentials",
+)
+parser.add_argument(
+    "--cloud",
+    default=None,
+    metavar="NAME",
+    help="Cloud name inside clouds.yaml (only needed if the file has multiple clouds)",
+)
 args = parser.parse_args()
 
 API = args.api.rstrip("/")
 
+# TLS verification
+if args.no_verify:
+    TLS_VERIFY = False
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+elif Path(args.cacert).exists():
+    TLS_VERIFY = args.cacert
+else:
+    TLS_VERIFY = True
+    print(f"WARNING: CA cert not found at '{args.cacert}', using system CA bundle.")
+
 # ── Step 0: get OIDC token ────────────────────────────────────────────────────
 
-# insert oidc token on cli
 print("\n=== Laniakea Queue API — test script ===\n")
-print("Paste your OIDC token (from ReCaS IAM),")
-print("then press Enter:\n")
+print(f"API endpoint : {API}")
+print(f"TLS verify   : {TLS_VERIFY}\n")
+print("Paste your OIDC token (from ReCaS IAM), then press Enter:\n")
 oidc_token = input("OIDC token: ").strip()
 
 if not oidc_token:
@@ -49,13 +90,23 @@ if not oidc_token:
 
 print("\n[1] Authenticating with API...")
 try:
-    r = requests.post(f"{API}/auth/oidc", json={"oidc_token": oidc_token}, timeout=15,)
+    r = requests.post(
+        f"{API}/auth/oidc",
+        json={"oidc_token": oidc_token},
+        verify=TLS_VERIFY,
+        timeout=15,
+    )
     r.raise_for_status()
 
-except requests.exceptions.ConnectionError:
-    print(f"ERROR: cannot reach API at {API}. Is it running?")
+except requests.exceptions.SSLError as exc:
+    print(f"ERROR: TLS/SSL error — {exc}")
+    print("  Use --cacert certs/ca.crt or --no-verify for testing.")
     sys.exit(1)
-
+except requests.exceptions.ConnectionError:
+    print(f"ERROR: cannot reach API at {API}")
+    print("  Is uvicorn running with --ssl-keyfile/--ssl-certfile/--ssl-ca-certs?")
+    print("  Is port 8443 open in the firewall?")
+    sys.exit(1)
 except requests.exceptions.HTTPError as exc:
     print(f"ERROR: authentication failed ({exc.response.status_code})")
     print(exc.response.text)
@@ -65,57 +116,90 @@ session_token = r.json()["session_token"]
 user_info     = r.json()["user_info"]
 expires_in    = r.json()["expires_in"]
 
-# INSERT HERE some debug info 
 print(f"✓ Authenticated as '{user_info.get('username') or user_info.get('sub')}'")
 print(f"  sub          : {user_info.get('sub')}")
 print(f"  Session token: valid for {expires_in // 60} minutes")
 
 AUTH_HEADER = {"Authorization": f"Bearer {session_token}"}
 
-# ── Step 2 (optional): write credentilas on Vault ──────────────────────────
+# ── Step 2 (optional): write credentials to Vault ────────────────────────────
 
 if args.setup_credentials:
-    print("\n[2] Credential setup — write to Vault via POST /profile/credentials")
-    print("    Leave a field empty to skip it.\n")
+    print("\n[2] Credential setup — POST /profile/credentials")
 
-    def _ask(label: str) -> str | None:
-        val = input(f"  {label}: ").strip()
-        return val if val else None
+    credentials = {}
 
-    print("  --- OpenStack ---")
-    os_ssh_key      = _ask("openstack_ssh_key (private key content or path)")
-    os_app_cred_id  = _ask("openstack_app_credential_id     (leave empty if using AAI token)")
-    os_app_cred_sec = _ask("openstack_app_credential_secret (leave empty if using AAI token)")
-    os_proxy        = _ask("openstack_proxy_host             (bastion IP, leave empty if public net)")
+    # ── auto-import from file ─────────────────────────────────────────────────
+    if args.credential_file:
+        print(f"\n  Importing from file: {args.credential_file}")
+        try:
+            from credential_parser import parse_credential_file, _print_parsed
+            parsed = parse_credential_file(args.credential_file, cloud_name=args.cloud)
+            _print_parsed(parsed)
+            credentials.update(parsed)
 
-    print("\n  --- AWS ---")
-    aws_ssh_key    = _ask("aws_ssh_key")
-    aws_access_key = _ask("aws_access_key")
-    aws_secret_key = _ask("aws_secret_key")
-    aws_bastion    = _ask("aws_bastion_ip (leave empty if not needed)")
+            # still ask for SSH key and proxy since they are never in RC/clouds.yaml
+            print("  The following fields are not in RC/clouds.yaml files.")
+            print("  Leave empty to skip.\n")
 
-    # Leggi la chiave SSH da file se sembra un path
-    def _maybe_read_file(value: str | None) -> str | None:
-        if value and Path(value).exists():
-            print(f"    → reading key from file: {value}")
-            return Path(value).read_text().strip()
-        return value
+            def _ask(label: str):
+                val = input(f"  {label}: ").strip()
+                return val if val else None
 
-    os_ssh_key  = _maybe_read_file(os_ssh_key)
-    aws_ssh_key = _maybe_read_file(aws_ssh_key)
+            ssh_key   = _ask("openstack_ssh_key (public key content or path to file)")
+            proxy     = _ask("openstack_proxy_host (bastion IP, leave empty if public net)")
 
-    credentials = {
-        "openstack_ssh_key":               os_ssh_key,
-        "openstack_app_credential_id":     os_app_cred_id,
-        "openstack_app_credential_secret": os_app_cred_sec,
-        "openstack_proxy_host":            os_proxy,
-        "aws_ssh_key":                     aws_ssh_key,
-        "aws_access_key":                  aws_access_key,
-        "aws_secret_key":                  aws_secret_key,
-        "aws_bastion_ip":                  aws_bastion,
-    }
-    
-    credentials = {k: v for k, v in credentials.items() if v is not None}
+            def _maybe_read_file(value):
+                if value and Path(value).exists():
+                    print(f"    → reading key from file: {value}")
+                    return Path(value).read_text().strip()
+                return value
+
+            ssh_key = _maybe_read_file(ssh_key)
+            if ssh_key:
+                credentials["openstack_ssh_key"] = ssh_key
+            if proxy:
+                credentials["openstack_proxy_host"] = proxy
+
+        except FileNotFoundError as exc:
+            print(f"  ERROR: {exc}")
+            sys.exit(1)
+        except Exception as exc:
+            print(f"  ERROR parsing credential file: {exc}")
+            sys.exit(1)
+
+    # ── manual input fallback ─────────────────────────────────────────────────
+    else:
+        print("  No --credential-file specified. Enter values manually.")
+        print("  Leave a field empty to skip.\n")
+
+        def _ask(label: str):
+            val = input(f"  {label}: ").strip()
+            return val if val else None
+
+        def _maybe_read_file(value):
+            if value and Path(value).exists():
+                print(f"    → reading key from file: {value}")
+                return Path(value).read_text().strip()
+            return value
+
+        print("  --- OpenStack ---")
+        credentials["openstack_auth_url"]               = _ask("auth_url (e.g. https://keystone.../v3)")
+        credentials["openstack_app_credential_id"]      = _ask("application_credential_id")
+        credentials["openstack_app_credential_secret"]  = _ask("application_credential_secret")
+        credentials["openstack_region_name"]            = _ask("region_name (e.g. garr-pa1)")
+        credentials["openstack_interface"]              = _ask("interface (public / internal)")
+        credentials["openstack_ssh_key"]                = _maybe_read_file(_ask("ssh_key (content or path)"))
+        credentials["openstack_proxy_host"]             = _ask("proxy_host (bastion IP, empty if public net)")
+
+        print("\n  --- AWS (leave all empty to skip) ---")
+        credentials["aws_ssh_key"]    = _maybe_read_file(_ask("aws_ssh_key"))
+        credentials["aws_access_key"] = _ask("aws_access_key")
+        credentials["aws_secret_key"] = _ask("aws_secret_key")
+        credentials["aws_bastion_ip"] = _ask("aws_bastion_ip")
+
+    # remove None / empty values
+    credentials = {k: v for k, v in credentials.items() if v}
 
     if not credentials:
         print("  No credentials entered, skipping Vault write.")
@@ -125,11 +209,12 @@ if args.setup_credentials:
                 f"{API}/profile/credentials",
                 json=credentials,
                 headers=AUTH_HEADER,
+                verify=TLS_VERIFY,
                 timeout=15,
             )
             r.raise_for_status()
             result = r.json()
-            print(f"\n  ✓ Credentials saved!")
+            print(f"\n  ✓ Credentials saved to Vault!")
             print(f"    Vault path : {result['vault_path']}")
             print(f"    User       : {result['user']}")
         except requests.exceptions.HTTPError as exc:
@@ -150,13 +235,10 @@ if not deployment_file.exists():
 with deployment_file.open() as f:
     deployment = json.load(f)
 
-# Inject OIDC token into auth
 deployment.setdefault("auth", {})
 deployment["auth"]["aai_token"] = oidc_token
 deployment["auth"]["sub"]       = user_info.get("sub", "")
-
-# Timestamp 
-deployment["timestamp"] = datetime.now(timezone.utc).isoformat()
+deployment["timestamp"]         = datetime.now(timezone.utc).isoformat()
 
 print(f"✓ Loaded deployment '{deployment.get('deployment_uuid', '?')}'"
       f" (provider: {deployment.get('selected_provider', '?')})")
@@ -169,6 +251,7 @@ try:
         f"{API}/api/deployments",
         json=deployment,
         headers=AUTH_HEADER,
+        verify=TLS_VERIFY,
         timeout=15,
     )
     r.raise_for_status()
@@ -179,10 +262,10 @@ except requests.exceptions.HTTPError as exc:
     sys.exit(1)
 
 result = r.json()
-
 print(f"✓ Job enqueued!")
 print(f"  Job ID    : {result['job_id']}")
 print(f"  Queue     : {result['queue_name']}")
 print(f"  Deployment: {result['deployment_uuid']}")
+print(f"  Status    : {result['status']}")
 print(f"  Message   : {result['message']}")
 print(f"\nThe worker will pick it up from the '{result['queue_name']}' queue.\n")
