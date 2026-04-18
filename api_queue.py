@@ -1,6 +1,4 @@
 """
-Laniakea Queue API
-
 FastAPI service that:
   - authenticates users via OIDC
   - enqueues deployment jobs to Redis
@@ -10,7 +8,6 @@ FastAPI service that:
 
 import copy
 import os
-import ssl
 from datetime import datetime, timedelta
 from typing import Optional
 import httpx
@@ -55,8 +52,8 @@ PG_DATABASE = os.getenv("PG_DATABASE", "")
 PG_USER     = os.getenv("PG_USER", "")
 PG_PASSWORD = os.getenv("PG_PASSWORD", "")
 
-# mTLS ca cert used to verify the agent's client certificate
-MTLS_CA_CERT = os.getenv("MTLS_CA_CERT", "certs/ca.crt")
+# NOTE: to revoke ALL agents change this value and restart API + all agents.
+AGENT_MASTER_PASSWORD = os.getenv("AGENT_MASTER_PASSWORD", "")
 
 # ============================================================
 # Deployment status DASHBOARD-LIKE
@@ -152,9 +149,7 @@ def _pg_get_deployment(uuid: str) -> Optional[dict]:
     conn = _get_pg_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:  # does not return tuple -> dictionary
-            cur.execute("SELECT * 
-                         FROM deployments 
-                         WHERE uuid = %s", (uuid,))
+            cur.execute("SELECT * FROM deployments WHERE uuid = %s", (uuid,))
             row = cur.fetchone()                                 # since uuid is unique
             return dict(row) if row else None
     finally:
@@ -166,12 +161,7 @@ def _pg_list_deployments(user_sub: str) -> list:
     conn = _get_pg_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * 
-                         FROM deployments 
-                         WHERE sub = %s 
-                         ORDER BY creation_time DESC",
-                (user_sub,),
-            )
+            cur.execute("SELECT * FROM deployments WHERE sub = %s ORDER BY creation_time DESC", (user_sub,),)
             return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -302,32 +292,49 @@ app = FastAPI(
 security = HTTPBearer()  # users must authenticate by the Bearer Token Protocol (JWT standard)
 
 # ============================================================
-# mTLS dependency
+# Agent token dependency
 # ============================================================
 
-def _require_agent_cert(request: Request) -> str:
+def _require_agent_token(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> str:
     """
-    Dependency that confirms the caller presented a valid mTLS client cert.
+    Validates the agent JWT signed with the shared AGENT_MASTER_PASSWORD.
 
-    How it works:
-    - Uvicorn is started with --ssl-ca-certs certs/ca.crt which sets
-      ssl.CERT_REQUIRED. The TLS handshake fails immediately if the client
-      does not present a certificate signed by that CA. NEED TO BE CREATED
-    - By the time this dependency runs, the cert is already cryptographically
-      validated by OpenSSL, we just extract the CN for audit logging.
-    - The agent's cert IS its identity
+    pool-password model:
+      - All agents share one master password configured.
+      - The agent mints a short-lived JWT signed with HMAC-SHA256
+        and sends it as a Bearer token on every request.
+      - The API verifies the signature with the same password.
+      - To revoke ALL agents: change AGENT_MASTER_PASSWORD in .env,
+        restart the API, then restart all agents with the new password.
+        Any token signed with the old password is immediately invalid.
 
-    To run with mTLS:
-        uvicorn api_queue:app \
-            --ssl-keyfile  certs/api.key \
-            --ssl-certfile certs/api.crt \
-            --ssl-ca-certs certs/ca.crt \
-            --host 0.0.0.0 --port 8443
+    No client certificates needed HTTPS encrypts the token in transit.
     """
-    # If running behind an mTLS-terminating proxy (nginx, ...), read the
-    # verified subject from a forwarded header.
-    agent_id = request.headers.get("X-Agent-ID", "laniakea-agent")
-    return agent_id
+    if not AGENT_MASTER_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="AGENT_MASTER_PASSWORD not configured on this API.",
+        )
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            AGENT_MASTER_PASSWORD,
+            algorithms=["HS256"],
+        )
+        return payload.get("sub", "unknown-agent")
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Agent token expired — agent must mint a new token.",
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid agent token: {exc}",
+        )
 
 # ============================================================
 # Auth helpers
@@ -594,7 +601,7 @@ async def get_deployment(uuid: str, caller: dict = Depends(_verify_session_token
 # ============================================================
 
 @app.patch("/internal/deployments/{uuid}/status")
-async def agent_update_status( uuid: str, body: StatusUpdateRequest, agent_id: str = Depends(_require_agent_cert),):
+async def agent_update_status( uuid: str, body: StatusUpdateRequest, agent_id: str = Depends(_require_agent_token),):
     """
     Called exclusively by laniakea agents to transition a deployment status.
 
