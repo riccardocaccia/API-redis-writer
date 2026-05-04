@@ -7,4 +7,5 @@ httpx
 authlib
 pydantic
 hvac>=2.0.0
+openstacksdk
 psycopg2-binary

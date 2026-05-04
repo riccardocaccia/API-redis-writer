@@ -22,10 +22,7 @@ from pydantic import BaseModel
 from redis import Redis
 from rq import Queue
 
-# ============================================================
 # Configuration (.env)
-# ============================================================
-
 #NOTE
 # maybe remove the standard empty values -> make them mandatory?
 # move port in .env?
@@ -55,10 +52,16 @@ PG_PASSWORD = os.getenv("PG_PASSWORD", "")
 # NOTE: to revoke ALL agents change this value and restart API + all agents.
 AGENT_MASTER_PASSWORD = os.getenv("AGENT_MASTER_PASSWORD", "")
 
-# ============================================================
-# Deployment status DASHBOARD-LIKE
-# ============================================================
+# LOGS
+# one file per deployment: orchestrator-{uuid}.log
+# The agent pushes lines here via POST /internal/deployments/{uuid}/logs.
+# The dashboard reads them via GET /api/deployments/{uuid}/logs.
+LOG_DIR = os.getenv("DEPLOYMENT_LOG_DIR", "/var/log/laniakea-agent")
+os.makedirs(LOG_DIR, exist_ok=True)
 
+######################
+# Deployment status 
+######################
 VALID_STATUSES = {
     "QUEUED",
     "CREATE_IN_PROGRESS",
@@ -68,9 +71,9 @@ VALID_STATUSES = {
     "UPDATE_FAILED",
 }
 
-# ============================================================
+########################
 # PostgreSQL helpers
-# ============================================================
+########################
 
 def _get_pg_conn():
     """
@@ -166,10 +169,9 @@ def _pg_list_deployments(user_sub: str) -> list:
     finally:
         conn.close()
 
-# ============================================================
+##################################
 # Redis setup
-# ============================================================
-
+##################################
 # connection pool
 redis_conn = Redis(
     host=REDIS_HOST,
@@ -196,9 +198,9 @@ PROVIDER_TO_QUEUE: dict = {
     "Aws":       "aws",
 }
 
-# ============================================================
+#############################
 # Vault client
-# ============================================================
+#############################
 
 vault_client = hvac.Client(
     url=VAULT_ADDR,
@@ -207,9 +209,9 @@ vault_client = hvac.Client(
     verify=VAULT_TLS_VERIFY,    # T/F
 )
 
-# ============================================================
+#############################
 # Pydantic models
-# ============================================================
+#############################
 
 class OIDCLoginRequest(BaseModel):
     """
@@ -279,25 +281,36 @@ class StatusUpdateRequest(BaseModel):
     status_reason: Optional[str] = None
     outputs:       Optional[str] = None
 
-# ============================================================
+class LogLineRequest(BaseModel):
+    """
+    A single log line pushed by the agent.
+    The API appends it to logs/orchestrator-{uuid}.log on the API VM.
+    """
+    level:   str   # INFO, ERROR, WARNING...
+    message: str
+
+
+##########################
 # FastAPI app
-# ============================================================
+##########################
 
 app = FastAPI(
     title="Laniakea Queue API",
     description="OIDC-authenticated gateway for enqueuing deployment jobs on Redis.",
-    version="1.2.0",  # NOTE: I guess...
+    version="1.3.0",  # NOTE: I guess...
 )
 
 security = HTTPBearer()  # users must authenticate by the Bearer Token Protocol (JWT standard)
 
-# ============================================================
-# Agent token dependency
-# ============================================================
+BASE_PREFIX = "/laniakea_core/v1.0"
+router          = APIRouter(prefix=BASE_PREFIX)
+internal_router = APIRouter(prefix=BASE_PREFIX + "/internal")
 
-def _require_agent_token(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-) -> str:
+#################################
+# Agent token dependency
+#################################
+
+def _require_agent_token(credentials: HTTPAuthorizationCredentials = Depends(security),) -> str:
     """
     Validates the agent JWT signed with the shared AGENT_MASTER_PASSWORD.
 
@@ -309,14 +322,10 @@ def _require_agent_token(
       - To revoke ALL agents: change AGENT_MASTER_PASSWORD in .env,
         restart the API, then restart all agents with the new password.
         Any token signed with the old password is immediately invalid.
-
-    No client certificates needed HTTPS encrypts the token in transit.
     """
     if not AGENT_MASTER_PASSWORD:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="AGENT_MASTER_PASSWORD not configured on this API.",
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                detail="AGENT_MASTER_PASSWORD not configured on this API.",)
     try:
         payload = jwt.decode(
             credentials.credentials,
@@ -336,9 +345,9 @@ def _require_agent_token(
             detail=f"Invalid agent token: {exc}",
         )
 
-# ============================================================
-# Auth helpers
-# ============================================================
+#################
+# Auth helers
+#################
 
 async def _fetch_userinfo(oidc_token: str) -> dict:
     """
@@ -413,9 +422,9 @@ def _verify_session_token(credentials: HTTPAuthorizationCredentials = Depends(se
     except jwt.InvalidTokenError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid session token: {exc}")
 
-# ============================================================
+##########################
 # Vault helpers
-# ============================================================
+##########################
 
 def _vault_write_credentials(user_sub: str, creds: dict) -> str:
     """
@@ -451,28 +460,13 @@ def _strip_secrets_from_job(deployment: DeploymentRequest) -> dict:
         provider.pop(field, None)
     return d
 
-# ============================================================
+###########################################
 # Endpoints — dashboard / user facing
-# ============================================================
+# NOTE: all the paths are temporary, to be added /v1.0/ and more articulate path
 
-# NOTE: the path is only temporary, to be added /v1.0/ and more articulate path
-@app.post("/auth/oidc", response_model=SessionTokenResponse)
+@router.post("/auth/oidc", response_model=SessionTokenResponse)
 async def login_oidc(req: OIDCLoginRequest):
-    """Exchange a valid OIDC access token for a short-lived API session token.
-    Flow:
-        1. Caller authenticates with the OIDC provider and obtains an access token.
-        2. POST /auth/oidc  { "oidc_token": "<access_token>" }
-        3. This endpoint verifies the token against the provider's userinfo endpoint.
-        4. On success, returns a signed JWT session token (valid for SESSION_TTL_MINUTES).
-        5. Use the session token as a Bearer token on all subsequent requests.
-    """
-
-    # NOTE for me: why not changing directly the token with keystone?
-    # for example we want to put 50 job in the queue, our token will always has
-    # 1 h life span, and if we exceed all the job managed after 60 minutes would fail.
-    # WHEN TO CHANGE the token? the worker must manage the exchange
-
-    # return a session token with the user info and his expire date
+    """Exchange a valid OIDC access token for a short-lived API session token."""
     user_info = await _fetch_userinfo(req.oidc_token)
     session_token, expires_in = _create_session_token(user_info)
     return SessionTokenResponse(
@@ -485,48 +479,39 @@ async def login_oidc(req: OIDCLoginRequest):
             "groups":   user_info.get("groups", []),
         },
     )
-
-
-@app.post("/profile/credentials", status_code=201)
+ 
+ 
+@router.post("/profile/credentials", status_code=201)
 async def save_credentials(creds: UserCredentials, caller: dict = Depends(_verify_session_token)):
-    """Save or update provider credentials for the authenticated user in Vault.
-
-    XXX: to be removed
-    # i've implemented a parser that, specified the lag in the input allows you to set your credential
-    # is it a function for the dashboard? 
-
-    OPTIONAL
-    Saves or updates credenzials for the associated provider.
-
-    Le credenziali vengono scritte su Vault sotto:
-        secret/data/<sub>/credentials
-    """
+    """Save or update provider credentials for the authenticated user in Vault."""
     secret_data = {k: v for k, v in creds.dict().items() if v is not None}
     if not secret_data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No credentials provided.")
     vault_path = _vault_write_credentials(caller["sub"], secret_data)
     return {"message": "Credentials saved to Vault.", "vault_path": f"{VAULT_MOUNT}/data/{vault_path}", "user": caller["username"]}
-
-
-@app.post("/api/deployments", response_model=JobResponse, status_code=202)
-async def enqueue_deployment(deployment: DeploymentRequest, caller: dict = Depends(_verify_session_token),):
+ 
+ 
+@router.post("/api/deployments", response_model=JobResponse, status_code=202)
+async def enqueue_deployment(
+    deployment: DeploymentRequest,
+    caller: dict = Depends(_verify_session_token),
+):
     """
     Accept a deployment request:
       1. Write a QUEUED record to PostgreSQL (dashboard can see it immediately).
       2. Enqueue the job on the matching Redis queue.
-    The agent has zero direct DB access: it only calls PATCH /internal/deployments/{uuid}/status.
+    The agent has zero direct DB access — it only calls PATCH /internal/deployments/{uuid}/status.
     """
-    # take the provider and put the provider name as queue name
     queue_name = PROVIDER_TO_QUEUE.get(deployment.selected_provider)
     if not queue_name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported provider '{deployment.selected_provider}'. Supported: {list(PROVIDER_TO_QUEUE.keys())}",
         )
-
+ 
     requested_at = datetime.utcnow()
-
-    # persist QUEUED state before touching Redis so the dashboard never misses it
+ 
+    # 1. Persist QUEUED state — before touching Redis so the dashboard never misses it
     try:
         _pg_create_deployment(
             uuid=deployment.deployment_uuid,
@@ -536,14 +521,13 @@ async def enqueue_deployment(deployment: DeploymentRequest, caller: dict = Depen
             provider=deployment.selected_provider,
             requested_at=requested_at,
         )
-
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to persist deployment to database: {exc}",
         )
-
-    # enqueue on Redis
+ 
+    # 2. Enqueue on Redis
     clean_deployment = _strip_secrets_from_job(deployment)
     job_data = {
         **clean_deployment,
@@ -552,24 +536,22 @@ async def enqueue_deployment(deployment: DeploymentRequest, caller: dict = Depen
         "requested_by": caller["username"],
         "requested_at": requested_at.isoformat(),
     }
-
+ 
     try:
         job = queues[queue_name].enqueue(
             "worker_wrapper.run_from_dict",
             job_data,
-            # NOTE: bho
             job_timeout="10h",
             description=f"Deployment {deployment.deployment_uuid} by {caller['username']}",
         )
-
     except Exception as exc:
-        # Mark as failed so dashboard see correct state
+        # Mark as failed so dashboard shows correct state
         _pg_update_status(deployment.deployment_uuid, "CREATE_FAILED", status_reason=f"Redis enqueue error: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to enqueue job: {exc}",
         )
-
+ 
     return JobResponse(
         job_id=job.id,
         queue_name=queue_name,
@@ -577,16 +559,16 @@ async def enqueue_deployment(deployment: DeploymentRequest, caller: dict = Depen
         status="QUEUED",
         message=f"Job enqueued on '{queue_name}' queue.",
     )
-
-
-@app.get("/api/deployments")
+ 
+ 
+@router.get("/api/deployments")
 async def list_deployments(caller: dict = Depends(_verify_session_token)):
     """Return all deployments belonging to the authenticated user."""
     rows = _pg_list_deployments(caller["sub"])
     return {"deployments": rows, "total": len(rows)}
-
-
-@app.get("/api/deployments/{uuid}")
+ 
+ 
+@router.get("/api/deployments/{uuid}")
 async def get_deployment(uuid: str, caller: dict = Depends(_verify_session_token)):
     """Return the full state of a single deployment."""
     row = _pg_get_deployment(uuid)
@@ -595,23 +577,75 @@ async def get_deployment(uuid: str, caller: dict = Depends(_verify_session_token
     if row.get("sub") != caller["sub"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
     return row
-
-# ============================================================
-# Endpoint: agent changing the status
-# ============================================================
-
-@app.patch("/internal/deployments/{uuid}/status")
-async def agent_update_status( uuid: str, body: StatusUpdateRequest, agent_id: str = Depends(_require_agent_token),):
+ 
+ 
+@router.get("/api/deployments/{uuid}/logs")
+async def get_deployment_logs(
+    uuid: str,
+    caller: dict = Depends(_verify_session_token),
+    tail: int = 200,
+):
     """
-    Called exclusively by laniakea agents to transition a deployment status.
-
-    Auth model (like Wireguard):
-    - The agent holds certs/agent.crt signed by an internal CA.
-    - The API TLS listener is started with --ssl-ca-certs certs/ca.crt,
-      which sets ssl.CERT_REQUIRED at the OpenSSL level.
-    - No valid cert = TLS handshake fails = request never reaches FastAPI.
-    - No Bearer token is needed or accepted.
-
+    Return the last `tail` lines of the deployment log.
+ 
+    The log is populated in real-time as the agent pushes lines via
+    POST /internal/deployments/{uuid}/logs. The dashboard can poll this
+    endpoint while the deployment is in progress to show live progress.
+ 
+    Query params:
+      tail (int, default 200): how many lines from the end to return.
+                               Pass tail=0 to get all lines.
+ 
+    Only the owner of the deployment can read its logs.
+    """
+    row = _pg_get_deployment(uuid)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Deployment {uuid} not found.")
+    if row.get("sub") != caller["sub"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+ 
+    log_path = os.path.join(LOG_DIR, f"orchestrator-{uuid}.log")
+ 
+    if not os.path.exists(log_path):
+        return {
+            "deployment_uuid": uuid,
+            "status":          row.get("status"),
+            "lines":           [],
+            "total_lines":     0,
+            "returned_lines":  0,
+            "note":            "No log lines received yet.",
+        }
+ 
+    with open(log_path, "r") as f:
+        all_lines = f.readlines()
+ 
+    lines = [l.rstrip("\n") for l in (all_lines[-tail:] if tail > 0 else all_lines)]
+ 
+    return {
+        "deployment_uuid": uuid,
+        "status":          row.get("status"),
+        "total_lines":     len(all_lines),
+        "returned_lines":  len(lines),
+        "lines":           lines,
+    }
+ 
+ 
+# ============================================================
+# Endpoints — agent facing
+# ============================================================
+ 
+@internal_router.patch("/deployments/{uuid}/status")
+async def agent_update_status(
+    uuid: str,
+    body: StatusUpdateRequest,
+    agent_id: str = Depends(_require_agent_token),
+):
+    """
+    Called exclusively by laniakea-agent to transition a deployment status.
+ 
+    Auth model: JWT signed with AGENT_MASTER_PASSWORD.
+    No valid token = 401, request never reaches business logic.
+ 
     Allowed transitions:
         QUEUED             -> CREATE_IN_PROGRESS
         CREATE_IN_PROGRESS -> CREATE_COMPLETE | CREATE_FAILED
@@ -624,14 +658,14 @@ async def agent_update_status( uuid: str, body: StatusUpdateRequest, agent_id: s
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown status '{new_status}'. Valid: {sorted(VALID_STATUSES)}",
         )
-
+ 
     row = _pg_get_deployment(uuid)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Deployment {uuid} not found.")
-
+ 
     current = row.get("status", "")
     _validate_transition(current, new_status, uuid)
-
+ 
     updated = _pg_update_status(
         uuid=uuid,
         new_status=new_status,
@@ -640,7 +674,7 @@ async def agent_update_status( uuid: str, body: StatusUpdateRequest, agent_id: s
     )
     if not updated:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DB update failed.")
-
+ 
     return {
         "deployment_uuid": uuid,
         "previous_status": current,
@@ -648,8 +682,47 @@ async def agent_update_status( uuid: str, body: StatusUpdateRequest, agent_id: s
         "updated_by":      agent_id,
         "updated_at":      datetime.utcnow().isoformat(),
     }
-
-
+ 
+ 
+@internal_router.post("/deployments/{uuid}/logs", status_code=204)
+async def agent_push_log(
+    uuid: str,
+    body: LogLineRequest,
+    agent_id: str = Depends(_require_agent_token),
+):
+    """
+    Called by the agent for each log line produced during a deployment.
+ 
+    The API appends the line to logs/orchestrator-{uuid}.log on the API VM.
+    The dashboard polls GET /api/deployments/{uuid}/logs to display progress.
+ 
+    Security:
+      - Requires a valid agent JWT (same auth as PATCH /internal/.../status).
+      - The deployment uuid is validated against the DB — the agent cannot
+        push logs for a uuid that does not exist.
+ 
+    Returns 204 No Content on success (nothing to return).
+    """
+    # Validate that the deployment exists before accepting log lines.
+    row = _pg_get_deployment(uuid)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Deployment {uuid} not found — cannot push log lines for unknown deployments.",
+        )
+ 
+    log_path = os.path.join(LOG_DIR, f"orchestrator-{uuid}.log")
+    try:
+        with open(log_path, "a") as f:
+            f.write(f"{body.message}\n")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to write log line: {exc}",
+        )
+    # 204 — no body returned
+ 
+ 
 def _validate_transition(current: str, new_status: str, uuid: str) -> None:
     """Raise 409 Conflict if the requested state transition is not allowed."""
     allowed = {
@@ -669,6 +742,98 @@ def _validate_transition(current: str, new_status: str, uuid: str) -> None:
                 f"Permitted next states: {sorted(permitted) or 'none (terminal state)'}."
             ),
         )
+ 
+ 
+# ============================================================
+# Endpoint — test OpenStack app credentials
+# ============================================================
+ 
+class CredentialTestRequest(BaseModel):
+    """
+    Payload for testing OpenStack application credentials.
+    The user uploads their RC file content (parsed client-side by the dashboard)
+    or pastes the values directly.
+    """
+    os_auth_url:                    str
+    os_application_credential_id:   str
+    os_application_credential_secret: str
+    os_region_name:                 str = "RegionOne"
+    os_interface:                   str = "public"
+ 
+ 
+class CredentialTestResponse(BaseModel):
+    success:      bool
+    message:      str
+    server_count: int = 0          # number of servers visible with these creds
+    detail:       str = ""         # error detail if success=False
+ 
+ 
+@router.post(
+    "/profile/credentials/test",
+    response_model=CredentialTestResponse,
+    status_code=200,
+    summary="Test OpenStack application credentials",
+    description=(
+        "Attempts to list servers on OpenStack using the provided app credentials. "
+        "Returns success=True if the credentials are valid and the API responds. "
+        "Equivalent to running `openstack server list` on the CLI."
+    ),
+)
+async def test_openstack_credentials(
+    body: CredentialTestRequest,
+    caller: dict = Depends(_verify_session_token),
+):
+    """
+    Test OpenStack application credentials by calling the Compute API.
+ 
+    Flow:
+      1. Build an OpenStack connection with the provided credentials.
+      2. Call conn.compute.servers() — equivalent to `openstack server list`.
+      3. If it returns (even an empty list) → credentials are valid.
+      4. If it raises an exception → credentials are invalid or endpoint is unreachable.
+ 
+    The credentials are NOT stored here — this is a pure validation call.
+    To save credentials use POST /profile/credentials.
+    """
+    try:
+        conn = openstack.connect(
+            auth_url=body.os_auth_url,
+            auth_type="v3applicationcredential",
+            application_credential_id=body.os_application_credential_id,
+            application_credential_secret=body.os_application_credential_secret,
+            region_name=body.os_region_name,
+            interface=body.os_interface,
+            identity_api_version=3,
+        )
+ 
+        # list() forces the generator to actually make the HTTP call
+        servers = list(conn.compute.servers())
+ 
+        return CredentialTestResponse(
+            success=True,
+            message=f"Credentials are valid. {len(servers)} server(s) visible in region {body.os_region_name}.",
+            server_count=len(servers),
+        )
+ 
+    except openstack.exceptions.HttpException as exc:
+        return CredentialTestResponse(
+            success=False,
+            message="OpenStack returned an HTTP error — credentials may be invalid or expired.",
+            detail=str(exc),
+        )
+    except openstack.exceptions.SDKException as exc:
+        return CredentialTestResponse(
+            success=False,
+            message="Could not connect to OpenStack — check auth_url and region.",
+            detail=str(exc),
+        )
+    except Exception as exc:
+        return CredentialTestResponse(
+            success=False,
+            message="Unexpected error while testing credentials.",
+            detail=str(exc),
+        )
+
 
 # ============================================================
 # Health check
@@ -705,6 +870,9 @@ async def health():
         "timestamp": datetime.utcnow().isoformat(),
     }
 
+# Register routers
+app.include_router(router)
+app.include_router(internal_router)
 
 # main
 if __name__ == "__main__":

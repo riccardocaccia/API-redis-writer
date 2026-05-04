@@ -239,6 +239,10 @@ deployment.setdefault("auth", {})
 deployment["auth"]["aai_token"] = oidc_token
 deployment["auth"]["sub"]       = user_info.get("sub", "")
 deployment["timestamp"]         = datetime.now(timezone.utc).isoformat()
+user_email = user_info.get("email")
+if not user_email:
+    # NOTE:TEST
+    user_email = "riccardo.caccia3@studenti.unimi.it"
 
 print(f"✓ Loaded deployment '{deployment.get('deployment_uuid', '?')}'"
       f" (provider: {deployment.get('selected_provider', '?')})")
