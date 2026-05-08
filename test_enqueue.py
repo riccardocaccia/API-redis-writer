@@ -28,7 +28,7 @@ import requests
 parser = argparse.ArgumentParser(description="Laniakea Queue API — test script")
 parser.add_argument(
     "--api",
-    default="https://212.189.205.167.cloud.ba.infn.it:8443",
+    default="https://212.189.205.167.cloud.ba.infn.it:8443/laniakea_core/v1.0",
     help="API base URL",
 )
 parser.add_argument(

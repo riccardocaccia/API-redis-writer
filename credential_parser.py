@@ -1,5 +1,4 @@
 """
-credential_parser.py
 Parses OpenStack credential files (.sh RC file or clouds.yaml) and returns
 a structured dict ready to be sent to POST /profile/credentials.
 
@@ -7,14 +6,11 @@ Supports:
   - RC file  (export OS_APPLICATION_CREDENTIAL_ID=xxx ...)
   - clouds.yaml (single or multi-cloud)
 
-Usage (standalone):
+Standalone usage (TEST ONLY):
     python3 credential_parser.py openrc.sh
     python3 credential_parser.py clouds.yaml
     python3 credential_parser.py clouds.yaml --cloud openstack
 
-Or import and use in your script:
-    from credential_parser import parse_credential_file
-    creds = parse_credential_file("openrc.sh")
 """
 
 import argparse
@@ -30,11 +26,8 @@ try:
 except ImportError:
     HAS_YAML = False
 
-###################################################
 # RC file parser
-###################################################
-
-# Maps RC env var names → our internal credential field names
+# Maps RC env var names needed for internal credential field names
 _RC_FIELD_MAP = {
     "OS_AUTH_URL":                      "openstack_auth_url",
     "OS_APPLICATION_CREDENTIAL_ID":     "openstack_app_credential_id",
@@ -51,39 +44,40 @@ def _parse_rc_file(path: Path) -> dict:
         export OS_APPLICATION_CREDENTIAL_ID=abc123
     """
     result = {}
-    # matches:  export KEY=value  or  KEY=value  (with optional quotes)
+    # matches: export KEY=value or KEY=value (with optional ecport and quotes)
     pattern = re.compile(r"""^\s*(?:export\s+)?(\w+)=["\']?([^"\';\n]*)["\']?\s*$""")
 
     for line in path.read_text().splitlines():
         m = pattern.match(line)
+        # if the line matches the schema it continues putting it inside the result dict
         if not m:
             continue
         env_key, value = m.group(1).strip(), m.group(2).strip()
         field = _RC_FIELD_MAP.get(env_key)
         if field and value:
             result[field] = value
-
     return result
 
-################################################
 #clouds.yaml parser
-################################################
 
 def _parse_clouds_yaml(path: Path, cloud_name: Optional[str] = None) -> dict:
     """
     Parse a clouds.yaml file.
     If cloud_name is None and there is only one cloud entry, use that one.
     """
+    # NOTE: put it in the requirement 
     if not HAS_YAML:
         raise ImportError("PyYAML is required to parse clouds.yaml. Run: pip install pyyaml")
 
-    raw = yaml.safe_load(path.read_text())
+    raw = yaml.safe_load(path.read_text()) # from yaml to python dict
     clouds = raw.get("clouds", {})
 
     if not clouds:
         raise ValueError("No 'clouds' section found in the file.")
 
     # auto-select if only one cloud
+    # if user hasn't specifyed with parser
+    # NOTE: to be removed outside test 
     if cloud_name is None:
         if len(clouds) == 1:
             cloud_name = next(iter(clouds))
@@ -102,14 +96,13 @@ def _parse_clouds_yaml(path: Path, cloud_name: Optional[str] = None) -> dict:
     result = {}
 
     # auth block
+    # add fields to the result
     if auth.get("auth_url"):
         result["openstack_auth_url"] = auth["auth_url"]
     if auth.get("application_credential_id"):
         result["openstack_app_credential_id"] = auth["application_credential_id"]
     if auth.get("application_credential_secret"):
         result["openstack_app_credential_secret"] = auth["application_credential_secret"]
-
-    # top-level fields
     if entry.get("region_name"):
         result["openstack_region_name"] = entry["region_name"]
     if entry.get("interface"):
@@ -119,10 +112,7 @@ def _parse_clouds_yaml(path: Path, cloud_name: Optional[str] = None) -> dict:
 
     return result
 
-
-####################################################
 # Public API
-####################################################
 
 def parse_credential_file(path: str, cloud_name: Optional[str] = None) -> dict:
     """
@@ -162,18 +152,17 @@ def parse_credential_file(path: str, cloud_name: Optional[str] = None) -> dict:
 
 
 def _print_parsed(creds: dict) -> None:
+    """
+    Print the parsed credential masking ids and secrets.
+    """
     print("\nParsed credentials:")
     for k, v in creds.items():
         # mask the secret
-        display = v[:4] + "***" if "secret" in k and len(v) > 4 else v
+        display = v[:4] + "***" if ("secret" in k or "id" in k) in k and len(v) > 4 else v
         print(f"  {k:<45} {display}")
     print()
 
-
-########################################################
-# CLI
-########################################################
-
+# main block
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse OpenStack RC or clouds.yaml credential file")
     parser.add_argument("file",  help="Path to the RC file (.sh) or clouds.yaml")
@@ -186,3 +175,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
+
