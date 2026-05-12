@@ -1,6 +1,6 @@
 """
-PostgreSQL connection
-The agent has NO direct DB access, all writes go through the API.
+PostgreSQL connection.
+The agent has NO direct DB access, **all writes go through the API**
 """
 
 import os
@@ -10,11 +10,11 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from config import PG_HOST, PG_PORT, PG_DATABASE, PG_USER, PG_PASSWORD
 
-
 def get_conn():
     """
     Open and return a new PostgreSQL connection.
     """
+    # act over config.py before changing here
     return psycopg2.connect(
         host=PG_HOST,
         port=PG_PORT,
@@ -23,17 +23,13 @@ def get_conn():
         password=PG_PASSWORD,
     )
 
-
 def create_deployment(
-    uuid: str,
-    user_sub: str,
-    username: str,
-    description: str,
-    provider: str,
-    requested_at: datetime,) -> None:
+    uuid: str, user_sub: str, username: str, description: str, provider: str, requested_at: datetime,
+    ) -> None:
     """
     Insert a new deployment row with status QUEUED.
-    Called by the API the moment a job is accepted. (before Redis)
+    Called by the API the moment a job is accepted, 
+    (db before redis)
     """
     conn = get_conn()
     try:
@@ -62,12 +58,9 @@ def create_deployment(
     finally:
         conn.close()
 
-
 def update_status(
-    uuid: str,
-    new_status: str,
-    status_reason: Optional[str] = None,
-    outputs: Optional[str] = None,) -> bool:
+    uuid: str, new_status: str, status_reason: Optional[str] = None, outputs: Optional[str] = None,
+    ) -> bool:
     """
     Update the status of an existing deployment.
     Returns True if a row was updated, False if uuid not found.
@@ -92,7 +85,6 @@ def update_status(
     finally:
         conn.close()
 
-
 def get_deployment(uuid: str) -> Optional[dict]:
     """
     Fetch a single deployment row by uuid. Returns None if not found.
@@ -105,7 +97,6 @@ def get_deployment(uuid: str) -> Optional[dict]:
             return dict(row) if row else None
     finally:
         conn.close()
-
 
 def list_deployments(user_sub: str) -> list:
     """
@@ -121,7 +112,6 @@ def list_deployments(user_sub: str) -> list:
             return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
-
 
 def check_connection() -> str:
     """

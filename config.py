@@ -1,17 +1,18 @@
 """
-Import from here in every other module the .env
+Import the .env
+Inizialize all the service: Redis, Vault, Posgre
 """
 
 import os
 
-# Auth
+# Authentication
 SECRET_KEY          = os.getenv("SECRET_KEY", "")
 ALGORITHM           = "HS256"
-SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "60"))
+SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "60")) # NOTE: maybe longer
 OIDC_DISCOVERY_URL  = os.getenv("OIDC_DISCOVERY_URL", "")
 
 # Agent pool password
-# To revoke ALL agents: change this value and restart API + all agents.
+# to revoke ALL agents: change this value and restart API + all agents.
 AGENT_MASTER_PASSWORD = os.getenv("AGENT_MASTER_PASSWORD", "")
 
 # Redis
@@ -38,6 +39,7 @@ PG_PASSWORD = os.getenv("PG_PASSWORD", "")
 # Dashboard reads via GET /api/deployments/{uuid}/logs.
 LOG_DIR = os.getenv("DEPLOYMENT_LOG_DIR", "/var/log/laniakea-agent")
 
+# NOTE: UPDATE.. still not used
 # deployment status
 VALID_STATUSES = {
     "QUEUED",

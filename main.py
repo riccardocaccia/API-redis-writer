@@ -17,7 +17,6 @@ app = FastAPI(
 
 # NOTE: CHANGE HERE for path
 # Route prefixes
-
 BASE    = "/laniakea_core/v1.0"
 INTERNAL = BASE + "/internal"
 
@@ -46,7 +45,6 @@ app.include_router(health.router)       # /health:no prefix
 #   GET    /health
 
 # Entry point uvicorn 
-
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",

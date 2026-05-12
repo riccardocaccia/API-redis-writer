@@ -15,17 +15,18 @@ from models import StatusUpdateRequest, LogLineRequest
 
 router = APIRouter()
 
-
 def _validate_transition(current: str, new_status: str, uuid: str) -> None:
-    """Raise 409 Conflict if the requested state transition is not allowed."""
+    """
+    Raise 409 Conflict if the requested state transition is not allowed
+    """
     allowed = {
         "QUEUED":              {"CREATE_IN_PROGRESS", "UPDATE_IN_PROGRESS"},
         "CREATE_IN_PROGRESS":  {"CREATE_COMPLETE", "CREATE_FAILED"},
         "UPDATE_IN_PROGRESS":  {"UPDATE_FAILED"},
         "CREATE_COMPLETE":     set(),
         "CREATE_FAILED":       set(),
-        "UPDATE_FAILED":       set(),
-    }
+        "UPDATE_FAILED":       set(),}
+
     permitted = allowed.get(current, set())
     if new_status not in permitted:
         raise HTTPException(
@@ -39,15 +40,12 @@ def _validate_transition(current: str, new_status: str, uuid: str) -> None:
 
 @router.patch("/deployments/{uuid}/status")
 async def agent_update_status(
-    uuid: str,
-    body: StatusUpdateRequest,
-    agent_id: str = Depends(verify_agent_token),
-):
+    uuid: str, body: StatusUpdateRequest, agent_id: str = Depends(verify_agent_token),):
     """
     Called exclusively by laniakea-agent to transition a deployment status.
 
-    Auth: HTCondor pool-password JWT — the agent sends a short-lived token
-    signed with AGENT_MASTER_PASSWORD. No client certificates needed.
+    Auth: the agent sends a short-lived token signed with AGENT_MASTER_PASSWORD. 
+    No client certificates needed.
 
     If the token is invalid (wrong/rotated password) the API updates the
     deployment to CREATE_FAILED before returning 401, so the dashboard
@@ -84,13 +82,9 @@ async def agent_update_status(
         "updated_at":      datetime.utcnow().isoformat(),
     }
 
-
 @router.post("/deployments/{uuid}/logs", status_code=204)
 async def agent_push_log(
-    uuid: str,
-    body: LogLineRequest,
-    agent_id: str = Depends(verify_agent_token),
-):
+    uuid: str, body: LogLineRequest,agent_id: str = Depends(verify_agent_token),):
     """
     Receive a single log line from the agent and append it to
     /var/log/laniakea-agent/terraform_{uuid}.log on the API VM.
@@ -98,10 +92,7 @@ async def agent_push_log(
     """
     os.makedirs(LOG_DIR, exist_ok=True)
     log_path = os.path.join(LOG_DIR, f"terraform_{uuid}.log")
-
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     line      = f"{timestamp} [{body.level}] {body.message}\n"
-
     with open(log_path, "a") as f:
         f.write(line)
-

@@ -10,7 +10,6 @@ from config import (REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
                     VAULT_ADDR, VAULT_WRITER_TOKEN, VAULT_TLS_VERIFY, VAULT_MOUNT,)
 
 # Redis
-
 redis_conn = Redis(
     host=REDIS_HOST,
     port=REDIS_PORT,
@@ -18,6 +17,7 @@ redis_conn = Redis(
     decode_responses=False,  # RQ uses binary pickle
 )
 
+# NOTE: need a final decision over the queues names
 queues: dict = {
     "openstack": Queue("openstack", connection=redis_conn),
     "aws":       Queue("aws",       connection=redis_conn),
@@ -33,7 +33,6 @@ PROVIDER_TO_QUEUE: dict = {
     "Aws":       "aws",
 }
 
-
 def get_queue(provider: str) -> tuple:
     """
     Returns (queue_name, Queue) for the given provider string.
@@ -47,7 +46,6 @@ def get_queue(provider: str) -> tuple:
         )
     return queue_name, queues[queue_name]
 
-
 def check_redis() -> str:
     """
     Returns 'connected' or an error string. 
@@ -59,15 +57,13 @@ def check_redis() -> str:
     except Exception as exc:
         return f"error: {exc}"
 
-
 # Vault
-
+# see config.py
 vault_client = hvac.Client(
     url=VAULT_ADDR,
     token=VAULT_WRITER_TOKEN,
     verify=VAULT_TLS_VERIFY,
 )
-
 
 def vault_write_credentials(user_sub: str, creds: dict) -> str:
     """

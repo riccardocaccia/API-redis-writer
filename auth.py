@@ -57,7 +57,7 @@ class DeploymentRequest(BaseModel):
     timestamp:         str
     description:       str    # optional or mandatory? check teams
     auth:              dict   # { aai_token, sub, group }
-    orchestrator:      dict   # { target_provider, desired_orchestrator, endpoint }
+    orchestrator:      dict   # target_provider, desired_orchestrator, endpoint
     selected_provider: str    # OpenStack | AWS
     cloud_providers:   dict
 
@@ -92,6 +92,7 @@ class LogLineRequest(BaseModel):
 class CredentialTestRequest(BaseModel):
     """
     Tests users app credential communicating with OpenStack.
+    Object used in credential.py
     """
     os_auth_url:                      str
     os_application_credential_id:     str
