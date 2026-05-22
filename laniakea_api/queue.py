@@ -6,7 +6,7 @@ import hvac
 from fastapi import HTTPException, status
 from redis import Redis
 from rq import Queue
-from config import (REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
+from laniakea_api.config import (REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
                     VAULT_ADDR, VAULT_WRITER_TOKEN, VAULT_TLS_VERIFY, VAULT_MOUNT,)
 
 # Redis

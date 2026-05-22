@@ -1,113 +1,147 @@
 """
-all Pydantic models used across the api.
+Authentication helpers:
+  - fetch_userinfo   : validate OIDC access token via provider's userinfo endpoint
+  - create_session_token : mint a short-lived HS256 JWT
+  - verify_session_token : FastAPI dependency — validates session JWT from Bearer header
+  - verify_agent_token   : FastAPI dependency — validates agent HMAC token
 """
 
+import hashlib
+import hmac
+import time
 from typing import Optional
-from pydantic import BaseModel
+
+import httpx
+import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from laniakea_api.config import (
+    SECRET_KEY, ALGORITHM, SESSION_TTL_MINUTES,
+    OIDC_DISCOVERY_URL, AGENT_MASTER_PASSWORD,
+)
+
+_bearer = HTTPBearer()
+
+# OIDC helpers
+
+async def _get_userinfo_endpoint() -> str:
+    """Fetch the userinfo endpoint URL from OIDC discovery."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(OIDC_DISCOVERY_URL)
+        resp.raise_for_status()
+        return resp.json()["userinfo_endpoint"]
 
 
-class OIDCLoginRequest(BaseModel):
+async def fetch_userinfo(oidc_token: str) -> dict:
     """
-    Only the aai token is needed.
+    Validate an OIDC access token by calling the provider's userinfo endpoint.
+    Returns the userinfo claims dict on success; raises HTTP 401 on failure.
     """
-    oidc_token: str
+    try:
+        userinfo_url = await _get_userinfo_endpoint()
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                userinfo_url,
+                headers={"Authorization": f"Bearer {oidc_token}"},
+            )
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"OIDC userinfo returned {resp.status_code}: {resp.text}",
+            )
+        return resp.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"OIDC validation failed: {exc}",
+        )
 
+# Session token (HS256 JWT)
 
-class SessionTokenResponse(BaseModel):
+def create_session_token(user_info: dict) -> tuple[str, int]:
     """
-    If the token check is OK returns:
+    Mint a short-lived HS256 JWT from OIDC userinfo claims.
+    Returns (token_string, expires_in_seconds).
     """
-    session_token: str
-    token_type:    str = "bearer" # checks if the user has the correct permission
-    expires_in:    int            # sec.
-    user_info:     dict
+    expires_in = SESSION_TTL_MINUTES * 60
+    now = int(time.time())
+    payload = {
+        "sub":      user_info.get("sub"),
+        "username": user_info.get("preferred_username") or user_info.get("sub"),
+        "email":    user_info.get("email"),
+        "groups":   user_info.get("groups", []),
+        "iat":      now,
+        "exp":      now + expires_in,
+    }
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return token, expires_in
 
 
-class UserCredentials(BaseModel):
+async def verify_session_token(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+) -> dict:
     """
-    Provider credentials associated with the user
-    Stored in Vault in secret/data/<sub>/credentials.
-    OpenStack: app_credentials or aai_token.
-    AWS: app_credentials
+    FastAPI dependency.  Validates the session JWT sent as Bearer token.
+    Returns the decoded payload dict (sub, username, email, groups, …).
     """
-    # NOTE: now no credentials is essential. Consider changing this logic
-    # OpenStack
-    openstack_ssh_key:               Optional[str] = None
-    openstack_app_credential_id:     Optional[str] = None
-    openstack_app_credential_secret: Optional[str] = None
-    openstack_proxy_host:            Optional[str] = None
-    openstack_auth_url:              Optional[str] = None
-    openstack_region_name:           Optional[str] = None
-    openstack_interface:             Optional[str] = None
-    openstack_identity_api_version:  Optional[str] = None
-    # AWS
-    aws_ssh_key:    Optional[str] = None #NOTE:mmmm I already have one in openstack, change key name ecc
-    aws_access_key: Optional[str] = None
-    aws_secret_key: Optional[str] = None
-    aws_bastion_ip: Optional[str] = None
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session token expired.",
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid session token: {exc}",
+        )
+
+# Agent token  (HMAC-SHA256 timestamp-based)
+
+_AGENT_TOKEN_TTL = 300  # seconds; agents must rotate tokens every 5 min
 
 
-class DeploymentRequest(BaseModel):
+def _expected_agent_token(ts: int) -> str:
+    """Compute the expected HMAC for a given unix timestamp."""
+    msg = f"laniakea-agent:{ts}".encode()
+    return hmac.new(AGENT_MASTER_PASSWORD.encode(), msg, hashlib.sha256).hexdigest()
+
+
+async def verify_agent_token(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+) -> str:
     """
-    Full deployment configuration (deployment_info.json), matching the structure used by workers.
-    The auth.aai_token field carries the OIDC token so that workers can exchange it for a keystone token
-    token when they process the job.
+    FastAPI dependency.  Validates the agent's HMAC token.
+
+    Token format (Bearer):  <unix_timestamp>:<hmac_hex>
+    The timestamp must be within ±_AGENT_TOKEN_TTL seconds of server time.
+
+    Returns the agent_id string ("agent:<ts>") on success.
     """
-    deployment_uuid:   str    # NOTE: the dashboard needs to create a uuid for each job
-    timestamp:         str
-    description:       str    # optional or mandatory? check teams
-    auth:              dict   # { aai_token, sub, group }
-    orchestrator:      dict   # target_provider, desired_orchestrator, endpoint
-    selected_provider: str    # OpenStack | AWS
-    cloud_providers:   dict
+    exc_401 = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired agent token.",
+    )
+    try:
+        raw = credentials.credentials
+        ts_str, provided_hmac = raw.split(":", 1)
+        ts = int(ts_str)
+    except (ValueError, AttributeError):
+        raise exc_401
 
+    now = int(time.time())
+    if abs(now - ts) > _AGENT_TOKEN_TTL:
+        raise exc_401
 
-class JobResponse(BaseModel):
-    job_id:          str
-    queue_name:      str
-    deployment_uuid: str
-    status:          str
-    message:         str
+    expected = _expected_agent_token(ts)
+    if not hmac.compare_digest(expected, provided_hmac):
+        raise exc_401
 
-
-class StatusUpdateRequest(BaseModel):
-    """
-    Payload sent by the agent to update a deployment status.
-    Only the agent (authenticated via mTLS client cert) can call PATCH /internal/...
-    """
-    status:        str
-    status_reason: Optional[str] = None
-    outputs:       Optional[str] = None
-
-
-class LogLineRequest(BaseModel):
-    """
-    A single log line pushed by the agent.
-    The API appends it to logs/orchestrator-{uuid}.log on the API VM.
-    """
-    level:   str   # INFO, ERROR, WARNING, ...
-    message: str
-
-
-class CredentialTestRequest(BaseModel):
-    """
-    Tests users app credential communicating with OpenStack.
-    Object used in credential.py
-    """
-    os_auth_url:                      str
-    os_application_credential_id:     str
-    os_application_credential_secret: str
-    os_region_name:                   str = "RegionOne"
-    os_interface:                     str = "public"
-
-
-class CredentialTestResponse(BaseModel):
-    """
-    Give back the check over the app credential validity, after
-    the user requests the test on the Dashboard.
-    """
-    success:      bool
-    message:      str
-    server_count: int = 0
-    detail:       str = ""
+    return f"agent:{ts}"
 
