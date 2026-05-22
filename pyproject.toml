@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "laniakea-api-server"
-version = "0.0.1"
+version = "0.0.3"
 description = "Laniakea Queue API — OIDC-authenticated gateway for cloud deployment orchestration"
 readme = "README.md"
 license = { text = "MIT" }
@@ -51,5 +51,5 @@ Homepage = "https://github.com/laniakea/laniakea-api"
 Issues = "https://github.com/laniakea/laniakea-api/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["laniakea_api"]
+include = ["laniakea_api"]
 
