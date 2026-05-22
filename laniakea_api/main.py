@@ -5,7 +5,7 @@ Registers all routers and starts uvicorn
 import os
 import uvicorn
 from fastapi import FastAPI
-from routers import agent, credentials, deployments, health
+from laniakea_api.routers import agent, credentials, deployments, health
 
 # FastAPI App
 

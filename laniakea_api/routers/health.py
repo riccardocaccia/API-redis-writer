@@ -7,8 +7,8 @@ GET /health
 
 from datetime import datetime
 from fastapi import APIRouter
-from database import check_connection
-from queue import check_redis, check_vault
+from laniakea_api.database import check_connection
+from laniakea_api.queue import check_redis, check_vault
 
 router = APIRouter()
 

@@ -8,7 +8,8 @@ from datetime import datetime
 from typing import Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from config import PG_HOST, PG_PORT, PG_DATABASE, PG_USER, PG_PASSWORD
+from laniakea_api.config import PG_HOST, PG_PORT, PG_DATABASE, PG_USER, PG_PASSWORD
+
 
 def get_conn():
     """

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "laniakea-api-server"
+version = "0.1.0"
+description = "Laniakea Queue API — OIDC-authenticated gateway for cloud deployment orchestration"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+authors = [
+  { name = "Laniakea Team" }
+]
+
+keywords = ["cloud", "deployment", "openstack", "aws", "fastapi", "redis", "orchestration"]
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Framework :: FastAPI",
+  "Topic :: System :: Systems Administration",
+]
+
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "redis",
+  "rq",
+  "pyjwt",
+  "httpx",
+  "pydantic>=2.0",
+  "hvac>=2.0.0",
+  "openstacksdk",
+  "psycopg2-binary",
+  "python-dotenv",
+  "pyyaml",
+]
+
+[project.scripts]
+laniakea-api = "laniakea_api.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/laniakea/laniakea-api"
+Issues = "https://github.com/laniakea/laniakea-api/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["laniakea_api"]
+

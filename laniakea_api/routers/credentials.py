@@ -7,10 +7,10 @@ POST /profile/credentials/test
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from auth import fetch_userinfo, create_session_token, verify_session_token
-from models import (OIDCLoginRequest, SessionTokenResponse,UserCredentials,
+from laniakea_api.auth import fetch_userinfo, create_session_token, verify_session_token
+from laniakea_api.models import (OIDCLoginRequest, SessionTokenResponse,UserCredentials,
                     CredentialTestRequest, CredentialTestResponse,)
-from queue import vault_write_credentials, VAULT_MOUNT
+from laniakea_api.queue import vault_write_credentials, VAULT_MOUNT
 
 router = APIRouter()
 

@@ -9,9 +9,9 @@ import os
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 import database as db
-from auth import verify_agent_token
-from config import VALID_STATUSES, LOG_DIR
-from models import StatusUpdateRequest, LogLineRequest
+from laniakea_api.auth import verify_agent_token
+from laniakea_api.config import VALID_STATUSES, LOG_DIR
+from laniakea_api.models import StatusUpdateRequest, LogLineRequest
 
 router = APIRouter()
 

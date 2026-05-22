@@ -17,7 +17,8 @@ AGENT_MASTER_PASSWORD = os.getenv("AGENT_MASTER_PASSWORD", "")
 
 # Redis
 REDIS_HOST     = os.getenv("REDIS_HOST", "")
-REDIS_PORT     = int(os.getenv("REDIS_PORT", "6379"))
+# NOTE: Idk port
+REDIS_PORT     = int(os.getenv("REDIS_PORT", "1908"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
 # vault 

@@ -13,10 +13,10 @@ from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 import database as db
-from auth import verify_session_token
-from config import LOG_DIR
-from models import DeploymentRequest, JobResponse
-from queue import get_queue
+from laniakea_api.auth import verify_session_token
+from laniakea_api.config import LOG_DIR
+from laniakea_api.models import DeploymentRequest, JobResponse
+from laniakea_api.queue import get_queue
 
 router = APIRouter()
 
