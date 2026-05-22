@@ -8,7 +8,7 @@ POST  /internal/deployments/{uuid}/logs
 import os
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
-import database as db
+from laniakea_api import database as db
 from laniakea_api.auth import verify_agent_token
 from laniakea_api.config import VALID_STATUSES, LOG_DIR
 from laniakea_api.models import StatusUpdateRequest, LogLineRequest

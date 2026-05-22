@@ -12,7 +12,7 @@ import os
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
-import database as db
+from laniakea_api import database as db
 from laniakea_api.auth import verify_session_token
 from laniakea_api.config import LOG_DIR
 from laniakea_api.models import DeploymentRequest, JobResponse
