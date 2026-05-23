@@ -1,13 +1,11 @@
 """
 Authentication helpers:
-  - fetch_userinfo   : validate OIDC access token via provider's userinfo endpoint
+  - fetch_userinfo       : validate OIDC access token via provider's userinfo endpoint
   - create_session_token : mint a short-lived HS256 JWT
   - verify_session_token : FastAPI dependency — validates session JWT from Bearer header
-  - verify_agent_token   : FastAPI dependency — validates agent HMAC token
+  - verify_agent_token   : FastAPI dependency — validates agent JWT (pool password model)
 """
 
-import hashlib
-import hmac
 import time
 from typing import Optional
 
@@ -25,22 +23,16 @@ _bearer = HTTPBearer()
 
 # OIDC helpers
 
-async def _get_userinfo_endpoint() -> str:
-    """Fetch the userinfo endpoint URL from OIDC discovery."""
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(OIDC_DISCOVERY_URL)
-        resp.raise_for_status()
-        return resp.json()["userinfo_endpoint"]
-
-
 async def fetch_userinfo(oidc_token: str) -> dict:
     """
     Validate an OIDC access token by calling the provider's userinfo endpoint.
     Returns the userinfo claims dict on success; raises HTTP 401 on failure.
     """
     try:
-        userinfo_url = await _get_userinfo_endpoint()
         async with httpx.AsyncClient(timeout=10) as client:
+            discovery = await client.get(OIDC_DISCOVERY_URL)
+            discovery.raise_for_status()
+            userinfo_url = discovery.json()["userinfo_endpoint"]
             resp = await client.get(
                 userinfo_url,
                 headers={"Authorization": f"Bearer {oidc_token}"},
@@ -84,7 +76,7 @@ async def verify_session_token(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict:
     """
-    FastAPI dependency.  Validates the session JWT sent as Bearer token.
+    FastAPI dependency. Validates the session JWT sent as Bearer token.
     Returns the decoded payload dict (sub, username, email, groups, …).
     """
     token = credentials.credentials
@@ -102,46 +94,34 @@ async def verify_session_token(
             detail=f"Invalid session token: {exc}",
         )
 
-# Agent token  (HMAC-SHA256 timestamp-based)
-
-_AGENT_TOKEN_TTL = 300  # seconds; agents must rotate tokens every 5 min
-
-
-def _expected_agent_token(ts: int) -> str:
-    """Compute the expected HMAC for a given unix timestamp."""
-    msg = f"laniakea-agent:{ts}".encode()
-    return hmac.new(AGENT_MASTER_PASSWORD.encode(), msg, hashlib.sha256).hexdigest()
-
+# Agent token (JWT pool password — HTCondor style)
 
 async def verify_agent_token(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> str:
     """
-    FastAPI dependency.  Validates the agent's HMAC token.
-
-    Token format (Bearer):  <unix_timestamp>:<hmac_hex>
-    The timestamp must be within ±_AGENT_TOKEN_TTL seconds of server time.
-
-    Returns the agent_id string ("agent:<ts>") on success.
+    FastAPI dependency. Validates the agent JWT signed with the shared AGENT_MASTER_PASSWORD.
+    Returns the agent_id (sub field) on success.
     """
-    exc_401 = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired agent token.",
-    )
+    if not AGENT_MASTER_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="AGENT_MASTER_PASSWORD not configured on this API.",
+        )
     try:
-        raw = credentials.credentials
-        ts_str, provided_hmac = raw.split(":", 1)
-        ts = int(ts_str)
-    except (ValueError, AttributeError):
-        raise exc_401
-
-    now = int(time.time())
-    if abs(now - ts) > _AGENT_TOKEN_TTL:
-        raise exc_401
-
-    expected = _expected_agent_token(ts)
-    if not hmac.compare_digest(expected, provided_hmac):
-        raise exc_401
-
-    return f"agent:{ts}"
-
+        payload = jwt.decode(
+            credentials.credentials,
+            AGENT_MASTER_PASSWORD,
+            algorithms=["HS256"],
+        )
+        return payload.get("sub", "unknown-agent")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Agent token expired.",
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid agent token: {exc}",
+        )
