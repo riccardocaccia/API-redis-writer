@@ -96,7 +96,7 @@ async def enqueue_deployment(
     try:
         job = q.enqueue(
             # NOTE: agent: worker_wrapper.py
-            "worker_wrapper.run_from_dict",
+            "laniakea_agent.worker_wrapper.run_from_dict",
             job_data,
             job_timeout="10h",
             description=f"Deployment {deployment.deployment_uuid} by {caller['username']}",
