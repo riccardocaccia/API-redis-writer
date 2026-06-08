@@ -5,7 +5,7 @@ Registers all routers and starts uvicorn
 import os
 import uvicorn
 from fastapi import FastAPI
-from laniakea_api.routers import agent, credentials, deployments, health
+from laniakea_api.routers import agent, agents,credentials, deployments, health
 
 # FastAPI App
 
@@ -22,7 +22,9 @@ INTERNAL = BASE + "/internal"
 
 app.include_router(credentials.router, prefix=BASE)
 app.include_router(deployments.router, prefix=BASE)
-app.include_router(agent.router,       prefix=INTERNAL)
+app.include_router(agent.router, prefix=INTERNAL)
+app.include_router(agents.router, prefix=INTERNAL)   # POST /internal/agents/heartbeat
+app.include_router(agents.router, prefix=BASE)        # GET /api/agents/status
 app.include_router(health.router)       # /health:no prefix
 
 ############ Routes registered ############################
