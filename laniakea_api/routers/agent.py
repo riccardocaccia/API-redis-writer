@@ -21,7 +21,7 @@ def _validate_transition(current: str, new_status: str, uuid: str) -> None:
     """
     allowed = {
         "QUEUED":              {"CREATE_IN_PROGRESS", "UPDATE_IN_PROGRESS"},
-        "CREATE_IN_PROGRESS":  {"CREATE_COMPLETE", "CREATE_FAILED"},
+        "CREATE_IN_PROGRESS":  {"CREATE_COMPLETE", "CREATE_FAILED", "QUEUED"},
         "UPDATE_IN_PROGRESS":  {"UPDATE_FAILED"},
         "CREATE_COMPLETE":     set(),
         "CREATE_FAILED":       set(),
