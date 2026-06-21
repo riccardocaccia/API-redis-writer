@@ -16,6 +16,11 @@ import sys
 
 
 def _add_to_path():
+    """
+    This function opens your Bash shell configuration file (~/.bashrc).
+    It checks whether the ~/.local/bin folder is already present. If it isn't, 
+    it adds the following line to the bottom of the file: export PATH=$HOME/.local/bin:$PATH
+    """
     bashrc = os.path.expanduser("~/.bashrc")
     line = 'export PATH=$HOME/.local/bin:$PATH'
 
@@ -33,26 +38,34 @@ def _add_to_path():
 
 
 def _create_workdir(workdir: str):
+    """
+    Create the main folder where the application will run (by default, ~/laniakea-api) 
+    and create a certs subfolder within it to host future (optional) SSL certificates.
+    
+    The most important part is generating the .env file. If the file doesn't already exist, it will 
+    be created using the default values managed in the CONFIG.py
+    """
     os.makedirs(workdir, exist_ok=True)
     os.makedirs(os.path.join(workdir, "certs"), exist_ok=True)
 
     env_path = os.path.join(workdir, ".env")
     if os.path.exists(env_path):
-        print(f"[workdir] .env already exists — skip")
+        print(f"[workdir] .env already exists... skipping the creation")
     else:
+        # NOTE: MOD. HERE THE TEMPLATE
         template = """\
 # ── Auth ──────────────────────────────────────────────────────────────────────
 # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
 SECRET_KEY=
 SESSION_TTL_MINUTES=60
-OIDC_DISCOVERY_URL=https://iam.recas.ba.infn.it/.well-known/openid-configuration
+OIDC_DISCOVERY_URL=https://example.it/.well-known/openid-configuration
 
 # ── Agent pool password (must match the agent .env) ───────────────────────────
 AGENT_MASTER_PASSWORD=
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
 REDIS_HOST=127.0.0.1
-REDIS_PORT=1908
+REDIS_PORT=
 REDIS_PASSWORD=
 
 # ── PostgreSQL ────────────────────────────────────────────────────────────────
@@ -83,20 +96,28 @@ DEPLOYMENT_LOG_DIR=/var/log/laniakea-agent
 
 
 def _create_log_dir():
+    """
+    The API and agents need to write deployment logs to /var/log/laniakea-agent.
+    The script create this system folder if needed.
+    """
     log_dir = "/var/log/laniakea-agent"
     if os.path.exists(log_dir):
-        print(f"[logs] {log_dir} already exists — skip")
+        print(f"[logs] {log_dir} already exists... skipping the creation")
         return
     try:
         os.makedirs(log_dir, exist_ok=True)
         os.chown(log_dir, os.getuid(), os.getgid())
         print(f"[logs] log directory created: {log_dir}")
     except PermissionError:
-        print(f"[logs] insufficient permissions — please run:")
+        print(f"[logs] insufficient permissions! Please run:")
         print(f"       sudo mkdir -p {log_dir} && sudo chown $USER:$USER {log_dir}")
 
 
 def main():
+    """
+    Once the installation is completed this function print
+    a guide for the user.
+    """
     parser = argparse.ArgumentParser(
         prog="laniakea-api-install",
         description="Initial setup of the VM for laniakea-api-server.",
@@ -114,6 +135,7 @@ def main():
     _create_log_dir()
     _create_workdir(args.workdir)
 
+    # FIXME: implement a guide for certifacete (non-self-signed)
     print(f"""
 === Setup completed ===
 

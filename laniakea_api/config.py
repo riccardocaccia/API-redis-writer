@@ -1,5 +1,5 @@
 """
-Import the .env
+Import the .env vars
 Inizialize all the service: Redis, Vault, Posgre
 """
 
@@ -17,7 +17,7 @@ AGENT_MASTER_PASSWORD = os.getenv("AGENT_MASTER_PASSWORD", "")
 
 # Redis
 REDIS_HOST     = os.getenv("REDIS_HOST", "")
-# NOTE: Idk port
+# NOTE: mod. port
 REDIS_PORT     = int(os.getenv("REDIS_PORT", "1908"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 

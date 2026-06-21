@@ -27,7 +27,8 @@ except ImportError:
     HAS_YAML = False
 
 # RC file parser
-# Maps RC env var names needed for internal credential field names
+# This dictionary is used to translate the names of standard OpenStack variables (left) 
+# into the internal names used by the Laniakea database and APIs (right).
 _RC_FIELD_MAP = {
     "OS_AUTH_URL":                      "openstack_auth_url",
     "OS_APPLICATION_CREDENTIAL_ID":     "openstack_app_credential_id",
@@ -44,7 +45,9 @@ def _parse_rc_file(path: Path) -> dict:
         export OS_APPLICATION_CREDENTIAL_ID=abc123
     """
     result = {}
-    # matches: export KEY=value or KEY=value (with optional ecport and quotes)
+    # matches: export KEY=value or KEY=value
+    # This regex can clean up and capture lines whether they are written as export KEY="value", 
+    # or as KEY='value' or simply KEY=value.
     pattern = re.compile(r"""^\s*(?:export\s+)?(\w+)=["\']?([^"\';\n]*)["\']?\s*$""")
 
     for line in path.read_text().splitlines():
@@ -58,14 +61,11 @@ def _parse_rc_file(path: Path) -> dict:
             result[field] = value
     return result
 
-#clouds.yaml parser
-
 def _parse_clouds_yaml(path: Path, cloud_name: Optional[str] = None) -> dict:
     """
     Parse a clouds.yaml file.
     If cloud_name is None and there is only one cloud entry, use that one.
-    """
-    # NOTE: put it in the requirement 
+    """ 
     if not HAS_YAML:
         raise ImportError("PyYAML is required to parse clouds.yaml. Run: pip install pyyaml")
 
@@ -76,8 +76,7 @@ def _parse_clouds_yaml(path: Path, cloud_name: Optional[str] = None) -> dict:
         raise ValueError("No 'clouds' section found in the file.")
 
     # auto-select if only one cloud
-    # if user hasn't specifyed with parser
-    # NOTE: to be removed outside test 
+    # if user hasn't specifyed with parser 
     if cloud_name is None:
         if len(clouds) == 1:
             cloud_name = next(iter(clouds))
@@ -96,7 +95,7 @@ def _parse_clouds_yaml(path: Path, cloud_name: Optional[str] = None) -> dict:
     result = {}
 
     # auth block
-    # add fields to the result
+    # NOTE: add fields to the result
     if auth.get("auth_url"):
         result["openstack_auth_url"] = auth["auth_url"]
     if auth.get("application_credential_id"):
@@ -109,10 +108,7 @@ def _parse_clouds_yaml(path: Path, cloud_name: Optional[str] = None) -> dict:
         result["openstack_interface"] = entry["interface"]
     if entry.get("identity_api_version"):
         result["openstack_identity_api_version"] = str(entry["identity_api_version"])
-
     return result
-
-# Public API
 
 def parse_credential_file(path: str, cloud_name: Optional[str] = None) -> dict:
     """
@@ -137,7 +133,7 @@ def parse_credential_file(path: str, cloud_name: Optional[str] = None) -> dict:
     elif suffix in (".sh", ".env", ""):
         creds = _parse_rc_file(p)
     else:
-        # try RC first, fall back to YAML
+        # ambiguous suffix: try RC first, fall back to YAML
         try:
             creds = _parse_rc_file(p)
             if not creds:

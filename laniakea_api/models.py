@@ -1,5 +1,7 @@
 """
-all Pydantic models used across the api.
+All Pydantic models used across the api.
+
+Defines the data structure of everything that enters/exits from the API 
 """
 
 from typing import Optional
@@ -9,13 +11,14 @@ from pydantic import BaseModel
 class OIDCLoginRequest(BaseModel):
     """
     Only the aai token is needed.
+    From idp.
     """
     oidc_token: str
 
 
 class SessionTokenResponse(BaseModel):
     """
-    If the token check is OK returns:
+    If the token check is OK returns a JWT containing:
     """
     session_token: str
     token_type:    str = "bearer" # checks if the user has the correct permission
@@ -55,7 +58,7 @@ class DeploymentRequest(BaseModel):
     """
     deployment_uuid:   str    # NOTE: the dashboard needs to create a uuid for each job
     timestamp:         str
-    description:       str    # optional or mandatory? check teams
+    description:       str    # NOTE: optional or mandatory? check teams
     auth:              dict   # { aai_token, sub, group }
     orchestrator:      dict   # target_provider, desired_orchestrator, endpoint
     selected_provider: str    # OpenStack | AWS

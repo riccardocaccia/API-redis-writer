@@ -1,5 +1,8 @@
 """
-Registers all routers and starts uvicorn
+Registers all routers and starts uvicorn.
+
+Create the FastAPI application instance and map the various groups of 
+endpoints (the "routers") to their respective URL addresses (the "prefixes").
 """
 
 import os
@@ -8,11 +11,11 @@ from fastapi import FastAPI
 from laniakea_api.routers import agent, agents,credentials, deployments, health
 
 # FastAPI App
-
 app = FastAPI(
     title="Laniakea Queue API",
     description="OIDC-authenticated gateway for enqueuing cloud deployment jobs.",
-    version="1.4.0",
+    # FIXME: automatizza versione
+    version="0.1.4",
 )
 
 # NOTE: CHANGE HERE for path
@@ -24,8 +27,8 @@ app.include_router(credentials.router, prefix=BASE)
 app.include_router(deployments.router, prefix=BASE)
 app.include_router(agent.router, prefix=INTERNAL)
 app.include_router(agents.router, prefix=INTERNAL)   # POST /internal/agents/heartbeat
-app.include_router(agents.router, prefix=BASE)        # GET /api/agents/status
-app.include_router(health.router)       # /health:no prefix
+app.include_router(agents.router, prefix=BASE)       # GET /api/agents/status
+app.include_router(health.router)                    # /health:no prefix
 
 ############ Routes registered ############################
 #NOTE: Add or remove every new modification
@@ -47,6 +50,7 @@ app.include_router(health.router)       # /health:no prefix
 #   GET    /health
 
 # Entry point uvicorn 
+# skipped
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",

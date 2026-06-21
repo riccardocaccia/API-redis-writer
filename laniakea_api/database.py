@@ -1,6 +1,8 @@
 """
 PostgreSQL connection.
-The agent has NO direct DB access, **all writes go through the API**
+The agent has NO direct DB access:
+                  **all writes go through the API**
+The Dashboard is stateless.
 """
 
 import os
@@ -35,6 +37,8 @@ def create_deployment(
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            # If the user making the request doesn't yet exist in the local database, it inserts them. 
+            #if they already exist (subprimary key conflict), it does nothing.
             cur.execute(
                 """
                 INSERT INTO users (sub, username, email, role, active)
@@ -43,6 +47,8 @@ def create_deployment(
                 """,
                 (user_sub, username, ""),
             )
+            #Create a row in the deployments table with the initial state set to "QUEUED." 
+            # if, by chance, that UUID already exists, simply update the state and date.
             cur.execute(
                 """
                 INSERT INTO deployments (
@@ -69,6 +75,8 @@ def update_status(
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            # COALESCE causes the database to keep old value already present 
+            # without overwriting them with an empty value.
             cur.execute(
                 """
                 UPDATE deployments

@@ -26,6 +26,7 @@ class QuotaInfo(BaseModel):
     floating_ips_available: Optional[int] = None
 
 
+# NOTE: is it ok every 30 sec? 
 class HeartbeatRequest(BaseModel):
     """
     Sent by the agent every 30 seconds
@@ -53,7 +54,7 @@ async def agent_heartbeat(
 ):
     """
     Called by laniakea-agent every 30 seconds.
-    Stores the agent's quota info in Redis with a 60-second TTL.
+    Stores the agent's quota info in Redis with a 60 second TTL.
     If the agent stops sending heartbeats, the key expires and the
     dashboard shows the agent as offline.
     """
