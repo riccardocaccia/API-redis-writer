@@ -35,6 +35,7 @@ class UserCredentials(BaseModel):
     """
     # NOTE: now no credentials is essential. Consider changing this logic
     # OpenStack
+    ssh_private_key: Optional[str] = None
     openstack_ssh_key:               Optional[str] = None
     openstack_app_credential_id:     Optional[str] = None
     openstack_app_credential_secret: Optional[str] = None

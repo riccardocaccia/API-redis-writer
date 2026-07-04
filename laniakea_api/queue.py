@@ -65,16 +65,35 @@ vault_client = hvac.Client(
     verify=VAULT_TLS_VERIFY,
 )
 
+
 def vault_write_credentials(user_sub: str, creds: dict) -> str:
     """
     Write user credentials to Vault under secret/data/<sub>/credentials.
+
+    MERGE semantics: the existing secret is read first and only the fields
+    provided in `creds` are overwritten. Fields already in Vault but not in
+    this request are preserved (e.g. ssh_private_key must survive a
+    GARR-only app-credentials update).
+
     Returns the vault path on success; raises HTTP 502 on failure.
     """
     vault_path = f"{user_sub}/credentials"
     try:
+        # Read existing secret (if any) to merge with incoming fields
+        try:
+            existing = vault_client.secrets.kv.v2.read_secret_version(
+                path=vault_path,
+                mount_point=VAULT_MOUNT,
+                raise_on_deleted_version=True,
+            )["data"]["data"]
+        except Exception:
+            existing = {}
+
+        merged = {**existing, **creds}
+
         vault_client.secrets.kv.v2.create_or_update_secret(
             path=vault_path,
-            secret=creds,
+            secret=merged,
             mount_point=VAULT_MOUNT,
         )
     except Exception as exc:
@@ -83,7 +102,6 @@ def vault_write_credentials(user_sub: str, creds: dict) -> str:
             detail=f"Vault write failed: {exc}",
         )
     return vault_path
-
 
 def check_vault() -> str:
     """
