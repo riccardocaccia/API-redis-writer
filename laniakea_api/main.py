@@ -15,7 +15,7 @@ app = FastAPI(
     title="Laniakea Queue API",
     description="OIDC-authenticated gateway for enqueuing cloud deployment jobs.",
     # FIXME: automatizza versione
-    version="0.1.4",
+    version="0.2.2",
 )
 
 # NOTE: CHANGE HERE for path

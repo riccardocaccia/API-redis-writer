@@ -63,6 +63,7 @@ class DeploymentRequest(BaseModel):
     auth:              dict   # { aai_token, sub, group }
     orchestrator:      dict   # target_provider, desired_orchestrator, endpoint
     selected_provider: str    # OpenStack | AWS
+    service_type:      Optional[str] = "galaxy"
     cloud_providers:   dict
 
 
