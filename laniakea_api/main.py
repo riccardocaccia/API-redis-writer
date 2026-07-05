@@ -1,21 +1,21 @@
 """
 Registers all routers and starts uvicorn.
 
-Create the FastAPI application instance and map the various groups of 
+Create the FastAPI application instance and map the various groups of
 endpoints (the "routers") to their respective URL addresses (the "prefixes").
 """
 
 import os
 import uvicorn
 from fastapi import FastAPI
-from laniakea_api.routers import agent, agents,credentials, deployments, health
+from laniakea_api.routers import agent, agents, credentials, deployments, health, tfstate
 
 # FastAPI App
 app = FastAPI(
     title="Laniakea Queue API",
     description="OIDC-authenticated gateway for enqueuing cloud deployment jobs.",
     # FIXME: automatizza versione
-    version="0.2.2",
+    version="0.3.0",
 )
 
 # NOTE: CHANGE HERE for path
@@ -28,6 +28,8 @@ app.include_router(deployments.router, prefix=BASE)
 app.include_router(agent.router, prefix=INTERNAL)
 app.include_router(agents.router, prefix=INTERNAL)   # POST /internal/agents/heartbeat
 app.include_router(agents.router, prefix=BASE)       # GET /api/agents/status
+# NOTE: tfstate route paths already contain "/internal/...", so mount on BASE
+app.include_router(tfstate.router, prefix=BASE)      # Terraform http backend
 app.include_router(health.router)                    # /health:no prefix
 
 ############ Routes registered ############################
@@ -40,16 +42,24 @@ app.include_router(health.router)                    # /health:no prefix
 #   POST   /laniakea_core/v1.0/api/deployments
 #   GET    /laniakea_core/v1.0/api/deployments
 #   GET    /laniakea_core/v1.0/api/deployments/{uuid}
+#   DELETE /laniakea_core/v1.0/api/deployments/{uuid}
 #   GET    /laniakea_core/v1.0/api/deployments/{uuid}/logs
 #
 # Internal (agent only):
 #   PATCH  /laniakea_core/v1.0/internal/deployments/{uuid}/status
 #   POST   /laniakea_core/v1.0/internal/deployments/{uuid}/logs
 #
+# Internal (terraform http backend, Basic auth with agent JWT as password):
+#   GET    /laniakea_core/v1.0/internal/tfstate/{uuid}
+#   POST   /laniakea_core/v1.0/internal/tfstate/{uuid}
+#   DELETE /laniakea_core/v1.0/internal/tfstate/{uuid}
+#   POST   /laniakea_core/v1.0/internal/tfstate/{uuid}/lock
+#   DELETE /laniakea_core/v1.0/internal/tfstate/{uuid}/lock
+#
 # Monitoring:
 #   GET    /health
 
-# Entry point uvicorn 
+# Entry point uvicorn
 # skipped
 if __name__ == "__main__":
     uvicorn.run(
@@ -61,4 +71,3 @@ if __name__ == "__main__":
         log_level="info",
         reload=False,
     )
-

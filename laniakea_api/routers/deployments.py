@@ -1,10 +1,11 @@
 """
 user deployment endpoints:
 
-GET  /api/deployments
-GET  /api/deployments/{uuid}
-POST /api/deployments
-GET  /api/deployments/{uuid}/logs
+GET    /api/deployments
+GET    /api/deployments/{uuid}
+POST   /api/deployments
+DELETE /api/deployments/{uuid}
+GET    /api/deployments/{uuid}/logs
 """
 
 import copy
@@ -19,6 +20,13 @@ from laniakea_api.models import DeploymentRequest, JobResponse
 from laniakea_api.queue import get_queue
 
 router = APIRouter()
+
+# States whose resources are already gone (emergency destroy) or were never
+# created: the record can be removed directly.
+DELETABLE_STATES   = {"CREATE_FAILED", "DELETE_COMPLETE", "QUEUED"}
+# States with live resources: a destroy job must run first.
+DESTROYABLE_STATES = {"CREATE_COMPLETE"}
+
 
 def _strip_secrets(deployment: DeploymentRequest) -> dict:
     """
@@ -102,12 +110,22 @@ async def enqueue_deployment(
             description=f"Deployment {deployment.deployment_uuid} by {caller['username']}",
         )
     except Exception as exc:
-        db.update_status(deployment.deployment_uuid, "CREATE_FAILED", 
+        db.update_status(deployment.deployment_uuid, "CREATE_FAILED",
                          status_reason=f"Redis enqueue error: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to enqueue job: {exc}",
         )
+
+    # Persist the job payload WITHOUT the auth block: it will be reused to
+    # rebuild a destroy job later (a fresh aai_token is injected at that time).
+    # Not fatal on failure: the deployment proceeds, only remote destroy
+    # becomes unavailable for this record.
+    try:
+        payload_to_store = {k: v for k, v in job_data.items() if k != "auth"}
+        db.save_payload(deployment.deployment_uuid, payload_to_store)
+    except Exception:
+        pass
 
     return JobResponse(
         job_id=job.id,
@@ -115,6 +133,82 @@ async def enqueue_deployment(
         deployment_uuid=deployment.deployment_uuid,
         status="QUEUED",
         message=f"Job enqueued on '{queue_name}' queue.",)
+
+
+@router.delete("/api/deployments/{uuid}", status_code=200)
+async def delete_deployment(
+    uuid: str, body: Optional[dict] = None, caller: dict = Depends(verify_session_token),):
+    """
+    Remove or destroy a deployment.
+
+      - Terminal states (CREATE_FAILED, DELETE_COMPLETE, QUEUED): resources
+        are already gone -> remove the record (and any leftover tf state).
+      - CREATE_COMPLETE: enqueue a Terraform destroy job. Requires a fresh
+        'aai_token' in the request body (injected into the stored payload).
+        Status becomes DELETE_IN_PROGRESS; once the agent completes, the
+        record turns DELETE_COMPLETE and can be removed with a second call.
+      - Any other state (e.g. CREATE_IN_PROGRESS): 409, wait first.
+    """
+    row = db.get_deployment(uuid)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Deployment {uuid} not found.")
+    if row.get("sub") != caller["sub"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+    status_now = row.get("status")
+
+    # dead record: just clean up
+    if status_now in DELETABLE_STATES:
+        db.delete_deployment(uuid)
+        db.tfstate_delete(uuid)   # leftover state, if any
+        return {"uuid": uuid, "deleted": True}
+
+    # live resources: enqueue a destroy job
+    if status_now in DESTROYABLE_STATES:
+        payload = db.get_payload(uuid)
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No stored payload for this deployment: remote destroy unavailable. "
+                       "Remove resources manually, then delete the record.",
+            )
+        aai_token = (body or {}).get("aai_token")
+        if not aai_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="aai_token required in request body to destroy resources.",
+            )
+
+        payload["auth"] = {
+            "aai_token": aai_token,
+            "sub":       caller["sub"],
+            "group":     (body or {}).get("group", "default"),
+        }
+
+        queue_name, q = get_queue(payload.get("selected_provider", "Openstack"))
+        try:
+            job = q.enqueue(
+                "laniakea_agent.worker_wrapper.destroy_from_dict",
+                payload,
+                job_timeout="1h",
+                description=f"Destroy {uuid} by {caller['username']}",
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to enqueue destroy job: {exc}",
+            )
+
+        db.update_status(uuid, "DELETE_IN_PROGRESS",
+                         status_reason=f"Destroy requested by {caller['username']}")
+        return {"uuid": uuid, "destroy_enqueued": True, "job_id": job.id,
+                "queue_name": queue_name}
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Deployment is in state {status_now}: wait for the current operation to finish.",
+    )
 
 
 @router.get("/api/deployments/{uuid}/logs")
@@ -126,7 +220,7 @@ async def get_deployment_logs(
     """
     row = db.get_deployment(uuid)
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"Deployment {uuid} not found.")
     if row.get("sub") != caller["sub"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
@@ -142,4 +236,3 @@ async def get_deployment_logs(
         lines = lines[-tail:]
 
     return {"uuid": uuid, "lines": lines, "total": len(lines)}
-
