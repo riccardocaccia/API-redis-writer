@@ -116,7 +116,13 @@ def list_deployments(user_sub: str) -> list:
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT * FROM deployments WHERE sub = %s ORDER BY creation_time DESC",
+                """
+                SELECT uuid, status, status_reason, description, provider_name,
+                       creation_time, update_time, endpoint, outputs, sub
+                FROM deployments
+                WHERE sub = %s
+                ORDER BY creation_time DESC
+                """,
                 (user_sub,),
             )
             return [dict(r) for r in cur.fetchall()]
