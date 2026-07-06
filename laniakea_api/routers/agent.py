@@ -23,9 +23,13 @@ def _validate_transition(current: str, new_status: str, uuid: str) -> None:
         "QUEUED":              {"CREATE_IN_PROGRESS", "UPDATE_IN_PROGRESS"},
         "CREATE_IN_PROGRESS":  {"CREATE_COMPLETE", "CREATE_FAILED", "QUEUED"},
         "UPDATE_IN_PROGRESS":  {"UPDATE_FAILED"},
-        "CREATE_COMPLETE":     set(),
+        "CREATE_COMPLETE":     {"DELETE_IN_PROGRESS"},
+        "DELETE_IN_PROGRESS":  {"DELETE_COMPLETE", "DELETE_FAILED"},
+        "DELETE_FAILED":       {"DELETE_IN_PROGRESS"},
         "CREATE_FAILED":       set(),
-        "UPDATE_FAILED":       set(),}
+        "UPDATE_FAILED":       set(),
+        "DELETE_COMPLETE":     set(),
+        }
 
     permitted = allowed.get(current, set())
     if new_status not in permitted:
