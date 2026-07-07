@@ -11,6 +11,8 @@ from laniakea_api.auth import fetch_userinfo, create_session_token, verify_sessi
 from laniakea_api.models import (OIDCLoginRequest, SessionTokenResponse,UserCredentials,
                     CredentialTestRequest, CredentialTestResponse,)
 from laniakea_api.queue import vault_write_credentials, VAULT_MOUNT
+from laniakea_api.queue import (vault_list_service_creds, vault_read_service_creds,
+                                vault_write_service_creds, vault_delete_service_creds)
 
 router = APIRouter()
 
@@ -96,3 +98,23 @@ async def test_openstack_credentials(body: CredentialTestRequest,
             detail=str(exc),
         )
 
+@router.get("/profile/service_creds")
+async def list_service_creds(caller: dict = Depends(verify_session_token)):
+    return vault_list_service_creds(caller["sub"])
+
+@router.get("/profile/service_creds/{name}")
+async def read_service_creds(name: str, caller: dict = Depends(verify_session_token)):
+    return vault_read_service_creds(caller["sub"], name)
+
+@router.put("/profile/service_creds/{name}")
+async def write_service_creds(name: str, body: dict, caller: dict = Depends(verify_session_token)):
+    if not name or "/" in name:
+        raise HTTPException(status_code=400, detail="Invalid credential name.")
+    body = {k: v for k, v in body.items() if v not in (None, "") and k != "name"}
+    vault_write_service_creds(caller["sub"], name, body)   # KV2: ogni write = nuova versione
+    return {"name": name, "saved": True}
+
+@router.delete("/profile/service_creds/{name}")
+async def delete_service_creds(name: str, caller: dict = Depends(verify_session_token)):
+    vault_delete_service_creds(caller["sub"], name)
+    return {"name": name, "deleted": True}
