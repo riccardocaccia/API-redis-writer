@@ -33,6 +33,15 @@ PROVIDER_TO_QUEUE: dict = {
     "Aws":       "aws",
 }
 
+
+def _vault():
+    """Build the Vault client at call time (env vars are loaded by then)."""
+    return hvac.Client(
+        url=os.getenv("VAULT_ADDR", ""),
+        token=os.getenv("VAULT_WRITER_TOKEN", ""),
+        verify=os.getenv("VAULT_TLS_VERIFY", "false").lower() == "true",
+    )
+
 def get_queue(provider: str) -> tuple:
     """
     Returns (queue_name, Queue) for the given provider string.
@@ -132,7 +141,7 @@ def _infer_service_type(data: dict) -> str:
 
 
 def vault_list_service_creds(user_sub: str) -> list:
-    client = vault_client()
+    client = _vault()
     try:
         resp = client.secrets.kv.v2.list_secrets(path=_sc_path(user_sub), mount_point=VAULT_MOUNT)
         names = [k.rstrip("/") for k in resp["data"]["keys"]]
@@ -145,7 +154,7 @@ def vault_list_service_creds(user_sub: str) -> list:
     return out
 
 def vault_read_service_creds(user_sub: str, name: str) -> dict:
-    client = vault_client()
+    client = _vault()
     try:
         resp = client.secrets.kv.v2.read_secret_version(path=_sc_path(user_sub, name), mount_point=VAULT_MOUNT)
         return resp["data"]["data"] or {}
@@ -153,18 +162,18 @@ def vault_read_service_creds(user_sub: str, name: str) -> dict:
         return {}
 
 def vault_write_service_creds(user_sub: str, name: str, data: dict) -> None:
-    client = vault_client()
+    client = _vault()
     client.secrets.kv.v2.create_or_update_secret(
         path=_sc_path(user_sub, name), secret=data, mount_point=VAULT_MOUNT)
 
 def vault_delete_service_creds(user_sub: str, name: str) -> None:
-    client = vault_client()
+    client = _vault()
     client.secrets.kv.v2.delete_metadata_and_all_versions(
         path=_sc_path(user_sub, name), mount_point=VAULT_MOUNT)
 
 
 def vault_read_global(user_sub: str) -> dict:
-    client = vault_client()
+    client = _vault()
     try:
         resp = client.secrets.kv.v2.read_secret_version(
             path=f"{user_sub}/credentials", mount_point=VAULT_MOUNT)
@@ -177,6 +186,6 @@ def vault_strip_global_keys(user_sub: str, keys: list) -> None:
     data = vault_read_global(user_sub)
     for k in keys:
         data.pop(k, None)
-    client = vault_client()
+    client = _vault()
     client.secrets.kv.v2.create_or_update_secret(
         path=f"{user_sub}/credentials", secret=data, mount_point=VAULT_MOUNT)
