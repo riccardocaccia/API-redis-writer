@@ -3,6 +3,7 @@ Redis connection and RQ queue setup
 """
 
 import hvac
+import os
 from fastapi import HTTPException, status
 from redis import Redis
 from rq import Queue
