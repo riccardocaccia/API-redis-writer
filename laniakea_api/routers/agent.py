@@ -78,6 +78,11 @@ async def agent_update_status(
     if not updated:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DB update failed.")
 
+    # Deployment lifecycle ends here: drop the record and its tf state.
+    if new_status == "DELETE_COMPLETE":
+        db.tfstate_delete(uuid)
+        db.delete_deployment(uuid)
+
     return {
         "deployment_uuid": uuid,
         "previous_status": current,

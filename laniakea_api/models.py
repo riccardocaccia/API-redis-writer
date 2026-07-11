@@ -65,6 +65,7 @@ class DeploymentRequest(BaseModel):
     selected_provider: str    # OpenStack | AWS
     service_type:      Optional[str] = "galaxy"
     cloud_providers:   dict
+    credentials_name: Optional[str] = ""  # NOTE: remove here if no cred selection 
 
 
 class JobResponse(BaseModel):

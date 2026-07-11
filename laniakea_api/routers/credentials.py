@@ -13,6 +13,8 @@ from laniakea_api.models import (OIDCLoginRequest, SessionTokenResponse,UserCred
 from laniakea_api.queue import vault_write_credentials, VAULT_MOUNT
 from laniakea_api.queue import (vault_list_service_creds, vault_read_service_creds,
                                 vault_write_service_creds, vault_delete_service_creds)
+from laniakea_api.queue import vault_read_global, vault_strip_global_keys
+
 
 router = APIRouter()
 
@@ -108,9 +110,12 @@ async def read_service_creds(name: str, caller: dict = Depends(verify_session_to
 
 @router.put("/profile/service_creds/{name}")
 async def write_service_creds(name: str, body: dict, caller: dict = Depends(verify_session_token)):
-    if not name or "/" in name:
-        raise HTTPException(status_code=400, detail="Invalid credential name.")
-    body = {k: v for k, v in body.items() if v not in (None, "") and k != "name"}
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name or ""):
+        raise HTTPException(status_code=400,
+            detail="Invalid name: only letters, digits, '_' and '-' (e.g. openstack_garr).")
+    body = {k: v for k, v in body.items()
+            if v not in (None, "") and k not in ("name", "service_type")}
     vault_write_service_creds(caller["sub"], name, body)   # KV2: ogni write = nuova versione
     return {"name": name, "saved": True}
 
@@ -118,3 +123,30 @@ async def write_service_creds(name: str, body: dict, caller: dict = Depends(veri
 async def delete_service_creds(name: str, caller: dict = Depends(verify_session_token)):
     vault_delete_service_creds(caller["sub"], name)
     return {"name": name, "deleted": True}
+
+
+@router.get("/profile/ssh_key")
+async def get_ssh_key(caller: dict = Depends(verify_session_token)):
+    data = vault_read_global(caller["sub"])
+    return {"ssh_key": data.get("ssh_key", "")}
+
+@router.get("/profile/ssh_key/private")
+async def get_ssh_private_key(caller: dict = Depends(verify_session_token)):
+    data = vault_read_global(caller["sub"])
+    if not data.get("ssh_private_key"):
+        raise HTTPException(status_code=404, detail="No private key stored.")
+    return {"ssh_private_key": data["ssh_private_key"]}
+
+@router.put("/profile/ssh_key")
+async def put_ssh_key(body: dict, caller: dict = Depends(verify_session_token)):
+    fields = {k: v for k, v in body.items()
+              if k in ("ssh_key", "ssh_private_key") and v}
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nothing to store.")
+    vault_write_credentials(caller["sub"], fields)   # merge-write sul path globale
+    return {"saved": sorted(fields.keys())}
+
+@router.delete("/profile/ssh_key")
+async def delete_ssh_key(caller: dict = Depends(verify_session_token)):
+    vault_strip_global_keys(caller["sub"], ["ssh_key", "ssh_private_key"])
+    return {"deleted": True}

@@ -9,7 +9,8 @@ import os
 SECRET_KEY          = os.getenv("SECRET_KEY", "")
 ALGORITHM           = "HS256"
 SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "60")) # NOTE: maybe longer
-OIDC_DISCOVERY_URL  = os.getenv("OIDC_DISCOVERY_URL", "")
+#OIDC_DISCOVERY_URL  = os.getenv("OIDC_DISCOVERY_URL", "")
+OIDC_DISCOVERY_URLS = [u.strip() for u in os.getenv("OIDC_DISCOVERY_URL", "").split(",") if u.strip()]
 
 # Agent pool password
 # to revoke ALL agents: change this value and restart API + all agents.

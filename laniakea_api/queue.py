@@ -119,8 +119,20 @@ def _sc_path(user_sub: str, name: str = "") -> str:
     base = f"{user_sub}/service_creds"
     return f"{base}/{name}" if name else base
 
+def _infer_service_type(data: dict) -> str:
+    """
+    Derive the credential type from the field names themselves —
+    nothing but secrets is stored in Vault.
+    """
+    if any(k.startswith("aws_") for k in data):
+        return "aws"
+    if any(k.startswith("openstack_") for k in data):
+        return "openstack"
+    return "unknown"
+
+
 def vault_list_service_creds(user_sub: str) -> list:
-    client = get_vault_client()
+    client = vault_client()
     try:
         resp = client.secrets.kv.v2.list_secrets(path=_sc_path(user_sub), mount_point=VAULT_MOUNT)
         names = [k.rstrip("/") for k in resp["data"]["keys"]]
@@ -129,11 +141,11 @@ def vault_list_service_creds(user_sub: str) -> list:
     out = []
     for n in names:
         data = vault_read_service_creds(user_sub, n)
-        out.append({"name": n, "service_type": data.get("service_type", "openstack")})
+        out.append({"name": n, "service_type": _infer_service_type(data)})
     return out
 
 def vault_read_service_creds(user_sub: str, name: str) -> dict:
-    client = get_vault_client()
+    client = vault_client()
     try:
         resp = client.secrets.kv.v2.read_secret_version(path=_sc_path(user_sub, name), mount_point=VAULT_MOUNT)
         return resp["data"]["data"] or {}
@@ -141,11 +153,30 @@ def vault_read_service_creds(user_sub: str, name: str) -> dict:
         return {}
 
 def vault_write_service_creds(user_sub: str, name: str, data: dict) -> None:
-    client = get_vault_client()
+    client = vault_client()
     client.secrets.kv.v2.create_or_update_secret(
         path=_sc_path(user_sub, name), secret=data, mount_point=VAULT_MOUNT)
 
 def vault_delete_service_creds(user_sub: str, name: str) -> None:
-    client = get_vault_client()
+    client = vault_client()
     client.secrets.kv.v2.delete_metadata_and_all_versions(
         path=_sc_path(user_sub, name), mount_point=VAULT_MOUNT)
+
+
+def vault_read_global(user_sub: str) -> dict:
+    client = vault_client()
+    try:
+        resp = client.secrets.kv.v2.read_secret_version(
+            path=f"{user_sub}/credentials", mount_point=VAULT_MOUNT)
+        return resp["data"]["data"] or {}
+    except Exception:
+        return {}
+
+def vault_strip_global_keys(user_sub: str, keys: list) -> None:
+    """Remove specific fields from the global path, keep the rest."""
+    data = vault_read_global(user_sub)
+    for k in keys:
+        data.pop(k, None)
+    client = vault_client()
+    client.secrets.kv.v2.create_or_update_secret(
+        path=f"{user_sub}/credentials", secret=data, mount_point=VAULT_MOUNT)

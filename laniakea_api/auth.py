@@ -10,45 +10,34 @@ import httpx
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from laniakea_api.config import (
-                                 SECRET_KEY, ALGORITHM, SESSION_TTL_MINUTES,
-                                 OIDC_DISCOVERY_URL, AGENT_MASTER_PASSWORD,
-                                )
+from laniakea_api.config import (SECRET_KEY, ALGORITHM, SESSION_TTL_MINUTES,
+                                 OIDC_DISCOVERY_URLS, AGENT_MASTER_PASSWORD)
+
 
 # Initialize security OAuth2 Bearer Token
 _bearer = HTTPBearer()
 
 async def fetch_userinfo(oidc_token: str) -> dict:
     """
-    Takes an authentication token provided by a user and asks an external identity server
-    (the OIDC Provider) who that user actually is, retriving user info
+    Validate the token against every trusted issuer, first match wins.
+    Supports federated logins (IAM ReCaS + Keycloak).
     """
-    try:
-        # asynchronous HTTP to avoid waste of server resources
-        async with httpx.AsyncClient(timeout=10) as client:
-            # OIDC discovery
-            discovery = await client.get(OIDC_DISCOVERY_URL)
-            discovery.raise_for_status()                         # status 200: OK
-            userinfo_url = discovery.json()["userinfo_endpoint"] # now final url is known
-            # USER info request
-            resp = await client.get(
-                userinfo_url,
-                headers={"Authorization": f"Bearer {oidc_token}"},
-            )
-        if resp.status_code != 200:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"OIDC userinfo returned {resp.status_code}",
-            )
-        return resp.json()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"OIDC validation failed: {exc}",
-        )
-
+    last_status = None
+    async with httpx.AsyncClient(timeout=10) as client:
+        for discovery_url in OIDC_DISCOVERY_URLS:
+            try:
+                discovery = await client.get(discovery_url)
+                discovery.raise_for_status()
+                userinfo_url = discovery.json()["userinfo_endpoint"]
+                resp = await client.get(userinfo_url,
+                                        headers={"Authorization": f"Bearer {oidc_token}"})
+                if resp.status_code == 200:
+                    return resp.json()
+                last_status = resp.status_code
+            except Exception:
+                continue
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail=f"Token rejected by all trusted issuers (last: {last_status})")
 
 def create_session_token(user_info: dict) -> tuple:
     """
