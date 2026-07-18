@@ -151,7 +151,11 @@ def vault_list_service_creds(user_sub: str) -> list:
     out = []
     for n in names:
         data = vault_read_service_creds(user_sub, n)
-        out.append({"name": n, "service_type": _infer_service_type(data)})
+        # public endpoint, not a secret. The Vault key follows the form field
+        # naming (openstack_auth_url); legacy entries may use os_auth_url.
+        out.append({"name": n, "service_type": _infer_service_type(data),
+                    "os_auth_url": data.get("openstack_auth_url")
+                                   or data.get("os_auth_url") or ""})
     return out
 
 def vault_read_service_creds(user_sub: str, name: str) -> dict:

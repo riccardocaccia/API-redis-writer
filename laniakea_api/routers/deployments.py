@@ -35,8 +35,10 @@ def _strip_secrets(deployment: DeploymentRequest) -> dict:
     d = copy.deepcopy(deployment.model_dump())
     provider_key = deployment.selected_provider.lower()
     provider     = d.get("cloud_providers", {}).get(provider_key, {})
+    # NOTE: ssh_key is deliberately NOT stripped — it is the user's PUBLIC
+    # key (sourced from the dashboard DB) and the agent needs it in the job.
     for field in [
-        "ssh_key", "aws_access_key", "aws_secret_key", "bastion_ip",
+        "aws_access_key", "aws_secret_key", "bastion_ip",
         "private_network_proxy_host", "os_application_credential_id",
         "os_application_credential_secret",
     ]:
